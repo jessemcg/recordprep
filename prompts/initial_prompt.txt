@@ -1,0 +1,16 @@
+Please turn recordprep.py into a GTK4/Libadwaita/python app called "Record Prep" that takes a large pdf containing an entire legal transcript that has an OCR layer as input and runs it through a pipeline to ultimately create various summaries and helper files based on the data in the text. This app will be developed iteratively beginning with just one step. Each step will be a listed box button in the app. For guidance on implimenting features, please consult /home/jesse/Dropbox/MCGLAW/config_files/scripts/PROJECTS/RecordPrep/example_python_GTK4_app/focus.py. 
+
+For now, create a widow with a header bar that has a file picker on the far left and a hamburger menu on the right. The file picker should allow the user to choose either one input pdf file or multiple pdf files. If the user chooses multiple pdf files, that parts should be joined (in alpha numeric order) into one pdf file for further processing.
+
+Also create a settings window that can be accessed through the hamburger menu. This is where LLM prompts and credentials will be stored for various steps in the pipeline. We will get to the details of those in later iterations. For now, let's implement step 1.
+
+## Step 1
+For step one, create a temp directory in the same directory as the input PDF. Call it "record_prep" Also create a subdirectories in "record_prep" called "text_record" and "images" Then use the PDFtotext python library to convert each pdf page into its own text file with the -layout flag to preserve formatting. Each text file should be four digits with leading zeros if necessary. Thus, it should start with 0001.txt, 0002.txt, 0003.txt, ect. Place all of those files in the "text_record" subdirectory.
+
+Then choose a good python library that can convert each page of the PDF into a png image. Here is the command I use in linux: mutool draw -r 300 -c gray -o "images/%04d.png" input.pdf If mutool is available in python, use that. If not use something that can also do 300 resolution and in gray scale. Like the text files, each resulting png file should be name by number starting with 0001.png, 0002.png, 0003.png, ect. 
+
+Please a button in the body of app for step one called "Create text/image files" This should be a listed box button. Many more will go below it. 
+
+This will be UV project. I would like to keep the pyproject.toml file up to date, so please tell me which "uv add" commands I should do to keep that file up to date.
+
+Finally create an AGENTS.md file consistent with this app and initial prompt. No need for a readme file yet. 

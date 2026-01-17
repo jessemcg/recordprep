@@ -1,0 +1,12 @@
+[project]
+name = "recordprep"
+version = "0.1.0"
+description = "Pipleline for making a PDF record useful for appellate attorneys"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pdftotext>=3.0.0",
+    "pygobject>=3.54.5",
+    "pymupdf>=1.26.7",
+    "pypdf>=6.6.0",
+]
