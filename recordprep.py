@@ -820,7 +820,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_six_row.connect("activated", self.on_step_six_clicked)
         listbox.append(self.step_six_row)
 
-        self.step_seven_row = Adw.ActionRow(title="Derive Heairng/Report Boundaries")
+        self.step_seven_row = Adw.ActionRow(title="Derive hearing/report Boundaries")
         self.step_seven_row.set_activatable(True)
         self.step_seven_row.connect("activated", self.on_step_seven_clicked)
         listbox.append(self.step_seven_row)
