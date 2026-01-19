@@ -215,6 +215,53 @@ def _load_classify_form_targets(classify_path: Path) -> list[tuple[str, str]]:
     return targets
 
 
+def _load_jsonl_entries(path: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    if not path.exists():
+        return entries
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                entries.append(payload)
+    return entries
+
+
+def _extract_entry_value(entry: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        if key in entry:
+            value = entry.get(key)
+            return str(value).strip() if value is not None else ""
+    normalized = {_normalize_key(key): key for key in entry}
+    for key in keys:
+        normalized_key = _normalize_key(key)
+        source_key = normalized.get(normalized_key)
+        if source_key is not None:
+            value = entry.get(source_key)
+            return str(value).strip() if value is not None else ""
+    return ""
+
+
+def _page_label_from_filename(filename: str) -> str:
+    return Path(filename).stem if filename else ""
+
+
+def _format_toc_line(label: str, page: str) -> str:
+    if label and page:
+        return f"\t{label} {page}"
+    if label:
+        return f"\t{label}"
+    if page:
+        return f"\t{page}"
+    return "\t"
+
+
 def _natural_sort_key(path: Path) -> list[object]:
     parts = re.split(r"(\d+)", path.name)
     key: list[object] = []
@@ -742,6 +789,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_five_row.connect("activated", self.on_step_five_clicked)
         listbox.append(self.step_five_row)
 
+        self.step_six_row = Adw.ActionRow(title="Derive TOC file")
+        self.step_six_row.set_activatable(True)
+        self.step_six_row.connect("activated", self.on_step_six_clicked)
+        listbox.append(self.step_six_row)
+
         self._setup_menu(app)
         self._load_selected_pdfs()
 
@@ -886,6 +938,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self.step_five_row.set_sensitive(False)
         threading.Thread(target=self._run_step_five, daemon=True).start()
+
+    def on_step_six_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self.step_six_row.set_sensitive(False)
+        threading.Thread(target=self._run_step_six, daemon=True).start()
 
     def _run_step_two(self) -> None:
         try:
@@ -1054,6 +1113,94 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 5 complete.")
         finally:
             GLib.idle_add(self.step_five_row.set_sensitive, True)
+
+    def _run_step_six(self) -> None:
+        try:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "record_prep"
+            classification_dir = root_dir / "classification"
+            derived_dir = root_dir / "derived"
+            classify_basic_path = classification_dir / "classify_basic.jsonl"
+            classify_dates_path = classification_dir / "classify_dates.jsonl"
+            classify_report_names_path = classification_dir / "classify_report_names.jsonl"
+            classify_form_names_path = classification_dir / "classify_form_names.jsonl"
+            for path in (
+                classify_basic_path,
+                classify_dates_path,
+                classify_report_names_path,
+                classify_form_names_path,
+            ):
+                if not path.exists():
+                    raise FileNotFoundError("Run Steps 2-5 to generate classify JSONL files first.")
+            derived_dir.mkdir(parents=True, exist_ok=True)
+            date_entries = _load_jsonl_entries(classify_dates_path)
+            basic_entries = _load_jsonl_entries(classify_basic_path)
+            date_by_file: dict[str, str] = {}
+            for entry in date_entries:
+                file_name = _extract_entry_value(entry, "file_name", "filename")
+                if not file_name:
+                    continue
+                date_value = _extract_entry_value(entry, "date")
+                date_by_file[file_name] = date_value
+            for entry in basic_entries:
+                file_name = _extract_entry_value(entry, "file_name", "filename")
+                if not file_name or file_name in date_by_file:
+                    continue
+                date_value = _extract_entry_value(entry, "date")
+                if date_value:
+                    date_by_file[file_name] = date_value
+            form_lines: list[str] = []
+            for entry in _load_jsonl_entries(classify_form_names_path):
+                form_name = _extract_entry_value(entry, "form_name", "form")
+                if not form_name:
+                    continue
+                page = _page_label_from_filename(
+                    _extract_entry_value(entry, "file_name", "filename")
+                )
+                form_lines.append(_format_toc_line(form_name, page))
+            report_lines: list[str] = []
+            for entry in _load_jsonl_entries(classify_report_names_path):
+                report_name = _extract_entry_value(entry, "report_name", "report", "name")
+                if not report_name:
+                    continue
+                page = _page_label_from_filename(
+                    _extract_entry_value(entry, "file_name", "filename")
+                )
+                report_lines.append(_format_toc_line(report_name, page))
+            minute_order_lines: list[str] = []
+            hearing_lines: list[str] = []
+            for file_name, page_type in _load_classify_date_targets(classify_basic_path):
+                date_value = date_by_file.get(file_name, "").strip()
+                page = _page_label_from_filename(file_name)
+                line = _format_toc_line(date_value, page)
+                if page_type == "minute_order":
+                    minute_order_lines.append(line)
+                elif page_type == "hearing":
+                    hearing_lines.append(line)
+            toc_lines: list[str] = [
+                "FORMS",
+                *form_lines,
+                "",
+                "REPORTS",
+                *report_lines,
+                "",
+                "MINUTE ORDERS",
+                *minute_order_lines,
+                "",
+                "HEARINGS",
+                *hearing_lines,
+            ]
+            toc_path = derived_dir / "TOC.txt"
+            toc_path.write_text("\n".join(toc_lines).rstrip() + "\n", encoding="utf-8")
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Step 6 failed: {exc}")
+        else:
+            GLib.idle_add(self.show_toast, "Step 6 complete.")
+        finally:
+            GLib.idle_add(self.step_six_row.set_sensitive, True)
 
     def _classify_text(
         self,
