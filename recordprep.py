@@ -233,6 +233,18 @@ def _load_jsonl_entries(path: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _load_json_entries(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(payload, list):
+        return [entry for entry in payload if isinstance(entry, dict)]
+    return []
+
+
 def _extract_entry_value(entry: dict[str, Any], *keys: str) -> str:
     for key in keys:
         if key in entry:
@@ -252,6 +264,12 @@ def _page_label_from_filename(filename: str) -> str:
     return Path(filename).stem if filename else ""
 
 
+def _page_number_from_label(label: str) -> int | None:
+    if not label:
+        return None
+    return _extract_page_number(label)
+
+
 def _format_toc_line(label: str, page: str) -> str:
     if label and page:
         return f"\t{label} {page}"
@@ -260,6 +278,33 @@ def _format_toc_line(label: str, page: str) -> str:
     if page:
         return f"\t{page}"
     return "\t"
+
+
+def _compile_raw_sections(
+    entries: list[dict[str, Any]],
+    label_keys: tuple[str, ...],
+    text_dir: Path,
+) -> str:
+    sections: list[str] = []
+    for entry in entries:
+        label = _extract_entry_value(entry, *label_keys).strip() or "Unknown"
+        start_label = _extract_entry_value(entry, "start_page", "start", "starte_page").strip()
+        end_label = _extract_entry_value(entry, "end_page", "end", "endpage").strip()
+        start_page = _page_number_from_label(start_label)
+        end_page = _page_number_from_label(end_label)
+        if start_page is None or end_page is None:
+            raise ValueError("Boundary entry missing start/end page.")
+        if end_page < start_page:
+            raise ValueError("Boundary entry has end page before start page.")
+        sections.append(f"<<<{label}>>>")
+        for page in range(start_page, end_page + 1):
+            page_path = text_dir / f"{page:04d}.txt"
+            if not page_path.exists():
+                raise FileNotFoundError(f"Missing text file {page_path.name}.")
+            content = page_path.read_text(encoding="utf-8", errors="ignore")
+            sections.append(content.rstrip("\n"))
+        sections.append("")
+    return "\n".join(sections).rstrip() + "\n"
 
 
 def _load_classify_basic_entries(classify_path: Path) -> list[tuple[str, str, int]]:
@@ -825,6 +870,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_seven_row.connect("activated", self.on_step_seven_clicked)
         listbox.append(self.step_seven_row)
 
+        self.step_eight_row = Adw.ActionRow(title="Create raw hearing/report files")
+        self.step_eight_row.set_activatable(True)
+        self.step_eight_row.connect("activated", self.on_step_eight_clicked)
+        listbox.append(self.step_eight_row)
+
         self._setup_menu(app)
         self._load_selected_pdfs()
 
@@ -983,6 +1033,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self.step_seven_row.set_sensitive(False)
         threading.Thread(target=self._run_step_seven, daemon=True).start()
+
+    def on_step_eight_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self.step_eight_row.set_sensitive(False)
+        threading.Thread(target=self._run_step_eight, daemon=True).start()
 
     def _run_step_two(self) -> None:
         try:
@@ -1341,6 +1398,42 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 7 complete.")
         finally:
             GLib.idle_add(self.step_seven_row.set_sensitive, True)
+
+    def _run_step_eight(self) -> None:
+        try:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "record_prep"
+            derived_dir = root_dir / "derived"
+            text_dir = root_dir / "text_record"
+            if not text_dir.exists():
+                raise FileNotFoundError("Run Step 1 to generate text files first.")
+            hearing_path = derived_dir / "hearing_boundaries.json"
+            report_path = derived_dir / "report_boudaries.json"
+            if not hearing_path.exists() or not report_path.exists():
+                raise FileNotFoundError("Run Step 7 to generate boundary JSON files first.")
+            summarization_dir = root_dir / "summarization"
+            summarization_dir.mkdir(parents=True, exist_ok=True)
+            hearing_entries = _load_json_entries(hearing_path)
+            report_entries = _load_json_entries(report_path)
+            if not hearing_entries and not report_entries:
+                raise FileNotFoundError("No hearing/report boundaries found.")
+            raw_hearings = _compile_raw_sections(hearing_entries, ("date",), text_dir)
+            raw_reports = _compile_raw_sections(
+                report_entries,
+                ("report_name", "report", "name"),
+                text_dir,
+            )
+            (summarization_dir / "raw_hearings.txt").write_text(raw_hearings, encoding="utf-8")
+            (summarization_dir / "raw_reports.txt").write_text(raw_reports, encoding="utf-8")
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Step 8 failed: {exc}")
+        else:
+            GLib.idle_add(self.show_toast, "Step 8 complete.")
+        finally:
+            GLib.idle_add(self.step_eight_row.set_sensitive, True)
 
     def _append_boundary_entry(
         self,
