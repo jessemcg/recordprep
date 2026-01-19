@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import unicodedata
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -313,6 +314,16 @@ def _sanitize_case_name_value(value: str) -> str:
     cleaned = re.sub(r"\s+", "_", trimmed)
     cleaned = re.sub(r"_+", "_", cleaned)
     return cleaned.strip("_")
+
+
+def _strip_nonstandard_characters(text: str) -> str:
+    cleaned_chars: list[str] = []
+    for ch in text:
+        if ch in {"\n", "\t"}:
+            cleaned_chars.append(ch)
+        elif unicodedata.category(ch) != "Cc":
+            cleaned_chars.append(ch)
+    return "".join(cleaned_chars)
 
 
 def _infer_case_name_from_text(text: str) -> str:
@@ -930,6 +941,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_one_row.connect("activated", self.on_step_one_clicked)
         listbox.append(self.step_one_row)
 
+        self.step_strip_nonstandard_row = Adw.ActionRow(title="Strip non-printing characters")
+        self.step_strip_nonstandard_row.set_activatable(True)
+        self.step_strip_nonstandard_row.connect("activated", self.on_step_strip_nonstandard_clicked)
+        listbox.append(self.step_strip_nonstandard_row)
+
         self.step_infer_case_row = Adw.ActionRow(title="Infer case name")
         self.step_infer_case_row.set_activatable(True)
         self.step_infer_case_row.connect("activated", self.on_step_infer_case_clicked)
@@ -1066,6 +1082,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_one_row.set_sensitive(False)
         threading.Thread(target=self._run_step_one, daemon=True).start()
 
+    def on_step_strip_nonstandard_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self.step_strip_nonstandard_row.set_sensitive(False)
+        threading.Thread(target=self._run_step_strip_nonstandard, daemon=True).start()
+
     def on_step_infer_case_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
@@ -1093,6 +1116,31 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 1 complete.")
         finally:
             GLib.idle_add(self.step_one_row.set_sensitive, True)
+
+    def _run_step_strip_nonstandard(self) -> None:
+        try:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "record_prep"
+            text_dir = root_dir / "text_record"
+            if not text_dir.exists():
+                raise FileNotFoundError("Run Step 1 to generate text files first.")
+            text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)
+            if not text_files:
+                raise FileNotFoundError("No text files found to sanitize.")
+            for text_path in text_files:
+                content = text_path.read_text(encoding="utf-8", errors="ignore")
+                cleaned = _strip_nonstandard_characters(content)
+                if cleaned != content:
+                    text_path.write_text(cleaned, encoding="utf-8")
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Strip non-standard characters failed: {exc}")
+        else:
+            GLib.idle_add(self.show_toast, "Strip non-standard characters complete.")
+        finally:
+            GLib.idle_add(self.step_strip_nonstandard_row.set_sensitive, True)
 
     def _run_step_infer_case(self) -> None:
         try:
