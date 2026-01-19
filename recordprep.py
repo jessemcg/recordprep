@@ -262,6 +262,32 @@ def _format_toc_line(label: str, page: str) -> str:
     return "\t"
 
 
+def _load_classify_basic_entries(classify_path: Path) -> list[tuple[str, str, int]]:
+    entries: list[tuple[str, str, int]] = []
+    if not classify_path.exists():
+        return entries
+    with classify_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            file_name = str(payload.get("file_name", "") or "").strip()
+            page_type = str(payload.get("page_type", "") or "").strip().lower()
+            if not file_name or not page_type:
+                continue
+            page_number = _extract_page_number(file_name)
+            if page_number is None:
+                continue
+            entries.append((file_name, page_type, page_number))
+    return entries
+
+
 def _natural_sort_key(path: Path) -> list[object]:
     parts = re.split(r"(\d+)", path.name)
     key: list[object] = []
@@ -794,6 +820,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_six_row.connect("activated", self.on_step_six_clicked)
         listbox.append(self.step_six_row)
 
+        self.step_seven_row = Adw.ActionRow(title="Derive Heairng/Report Boundaries")
+        self.step_seven_row.set_activatable(True)
+        self.step_seven_row.connect("activated", self.on_step_seven_clicked)
+        listbox.append(self.step_seven_row)
+
         self._setup_menu(app)
         self._load_selected_pdfs()
 
@@ -945,6 +976,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self.step_six_row.set_sensitive(False)
         threading.Thread(target=self._run_step_six, daemon=True).start()
+
+    def on_step_seven_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self.step_seven_row.set_sensitive(False)
+        threading.Thread(target=self._run_step_seven, daemon=True).start()
 
     def _run_step_two(self) -> None:
         try:
@@ -1201,6 +1239,140 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 6 complete.")
         finally:
             GLib.idle_add(self.step_six_row.set_sensitive, True)
+
+    def _run_step_seven(self) -> None:
+        try:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "record_prep"
+            classification_dir = root_dir / "classification"
+            derived_dir = root_dir / "derived"
+            classify_basic_path = classification_dir / "classify_basic.jsonl"
+            classify_dates_path = classification_dir / "classify_dates.jsonl"
+            classify_report_names_path = classification_dir / "classify_report_names.jsonl"
+            for path in (classify_basic_path, classify_dates_path, classify_report_names_path):
+                if not path.exists():
+                    raise FileNotFoundError("Run Steps 2-4 to generate classify JSONL files first.")
+            derived_dir.mkdir(parents=True, exist_ok=True)
+            date_by_file: dict[str, str] = {}
+            for entry in _load_jsonl_entries(classify_dates_path):
+                file_name = _extract_entry_value(entry, "file_name", "filename")
+                if not file_name:
+                    continue
+                date_value = _extract_entry_value(entry, "date")
+                if date_value:
+                    date_by_file[file_name] = date_value
+            report_name_by_file: dict[str, str] = {}
+            for entry in _load_jsonl_entries(classify_report_names_path):
+                file_name = _extract_entry_value(entry, "file_name", "filename")
+                report_name = _extract_entry_value(entry, "report_name", "report", "name")
+                if file_name and report_name:
+                    report_name_by_file[file_name] = report_name
+            hearing_boundaries: list[dict[str, str]] = []
+            report_boundaries: list[dict[str, str]] = []
+            entries = _load_classify_basic_entries(classify_basic_path)
+            if not entries:
+                raise FileNotFoundError("No entries found in classify_basic.jsonl.")
+            current_type: str | None = None
+            current_start_file: str | None = None
+            current_end_file: str | None = None
+            for file_name, page_type, page_number in entries:
+                is_sequence_type = page_type in {"hearing", "report"}
+                if not is_sequence_type:
+                    if current_type:
+                        self._append_boundary_entry(
+                            current_type,
+                            current_start_file,
+                            current_end_file,
+                            date_by_file,
+                            report_name_by_file,
+                            hearing_boundaries,
+                            report_boundaries,
+                        )
+                        current_type = None
+                        current_start_file = None
+                        current_end_file = None
+                    continue
+                if (
+                    page_type != current_type
+                    or current_end_file is None
+                    or _extract_page_number(current_end_file) != page_number - 1
+                ):
+                    if current_type:
+                        self._append_boundary_entry(
+                            current_type,
+                            current_start_file,
+                            current_end_file,
+                            date_by_file,
+                            report_name_by_file,
+                            hearing_boundaries,
+                            report_boundaries,
+                        )
+                    current_type = page_type
+                    current_start_file = file_name
+                    current_end_file = file_name
+                else:
+                    current_end_file = file_name
+            if current_type:
+                self._append_boundary_entry(
+                    current_type,
+                    current_start_file,
+                    current_end_file,
+                    date_by_file,
+                    report_name_by_file,
+                    hearing_boundaries,
+                    report_boundaries,
+                )
+            hearing_path = derived_dir / "hearing_boundaries.json"
+            hearing_path.write_text(
+                json.dumps(hearing_boundaries, indent=2),
+                encoding="utf-8",
+            )
+            report_path = derived_dir / "report_boudaries.json"
+            report_path.write_text(
+                json.dumps(report_boundaries, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Step 7 failed: {exc}")
+        else:
+            GLib.idle_add(self.show_toast, "Step 7 complete.")
+        finally:
+            GLib.idle_add(self.step_seven_row.set_sensitive, True)
+
+    def _append_boundary_entry(
+        self,
+        page_type: str | None,
+        start_file: str | None,
+        end_file: str | None,
+        date_by_file: dict[str, str],
+        report_name_by_file: dict[str, str],
+        hearing_boundaries: list[dict[str, str]],
+        report_boundaries: list[dict[str, str]],
+    ) -> None:
+        if not page_type or not start_file or not end_file:
+            return
+        start_page = _page_label_from_filename(start_file)
+        end_page = _page_label_from_filename(end_file)
+        if page_type == "hearing":
+            hearing_boundaries.append(
+                {
+                    "date": date_by_file.get(start_file, ""),
+                    "start_page": start_page,
+                    "end_page": end_page,
+                }
+            )
+            return
+        if page_type == "report":
+            report_boundaries.append(
+                {
+                    "report_name": report_name_by_file.get(start_file, ""),
+                    "start_page": start_page,
+                    "end_page": end_page,
+                }
+            )
 
     def _classify_text(
         self,
