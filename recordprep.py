@@ -38,6 +38,10 @@ CONFIG_KEY_CLASSIFY_REPORTS_API_URL = "classify_report_names_api_url"
 CONFIG_KEY_CLASSIFY_REPORTS_MODEL_ID = "classify_report_names_model_id"
 CONFIG_KEY_CLASSIFY_REPORTS_API_KEY = "classify_report_names_api_key"
 CONFIG_KEY_CLASSIFY_REPORTS_PROMPT = "classify_report_names_prompt"
+CONFIG_KEY_CASE_NAME_API_URL = "case_name_api_url"
+CONFIG_KEY_CASE_NAME_MODEL_ID = "case_name_model_id"
+CONFIG_KEY_CASE_NAME_API_KEY = "case_name_api_key"
+CONFIG_KEY_CASE_NAME_PROMPT = "case_name_prompt"
 CONFIG_KEY_CLASSIFY_FORMS_API_URL = "classify_form_names_api_url"
 CONFIG_KEY_CLASSIFY_FORMS_MODEL_ID = "classify_form_names_model_id"
 CONFIG_KEY_CLASSIFY_FORMS_API_KEY = "classify_form_names_api_key"
@@ -67,6 +71,13 @@ DEFAULT_CLASSIFY_FORM_NAMES_PROMPT = (
     "You are extracting the form name from a form page in an OCR'd legal transcript. "
     "Return JSON with keys: form_name. "
     "form_name should be the formal form title if present. "
+    "If unknown, use an empty string."
+)
+DEFAULT_CASE_NAME_PROMPT = (
+    "You are inferring the case name from the first three pages of an OCR'd legal transcript. "
+    "Return only the case name as plain text. "
+    "The case name should replace spaces with underscores, like In_re_Mark_T or "
+    "Social_Services_v_Breanna_F. "
     "If unknown, use an empty string."
 )
 
@@ -280,6 +291,53 @@ def _format_toc_line(label: str, page: str) -> str:
     return "\t"
 
 
+def _sanitize_case_name_tokens(tokens: list[str]) -> str:
+    cleaned: list[str] = []
+    for token in tokens:
+        lowered = token.lower()
+        if lowered in {"v", "vs"}:
+            cleaned.append("v")
+        elif lowered == "re":
+            cleaned.append("re")
+        elif lowered == "in":
+            cleaned.append("In")
+        else:
+            cleaned.append(token)
+    return "_".join(cleaned)
+
+
+def _sanitize_case_name_value(value: str) -> str:
+    trimmed = value.strip()
+    if not trimmed:
+        return ""
+    cleaned = re.sub(r"\s+", "_", trimmed)
+    cleaned = re.sub(r"_+", "_", cleaned)
+    return cleaned.strip("_")
+
+
+def _infer_case_name_from_text(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    patterns = [
+        re.compile(r"\bIn\s+re\b", re.IGNORECASE),
+        re.compile(r"\bIn\s+the\s+Matter\s+of\b", re.IGNORECASE),
+    ]
+    for line in lines:
+        if any(pattern.search(line) for pattern in patterns):
+            tokens = re.findall(r"[A-Za-z0-9]+", line)
+            if tokens:
+                return _sanitize_case_name_tokens(tokens)
+    for line in lines:
+        if re.search(r"\b(vs\.?|v\.)\b", line, re.IGNORECASE):
+            tokens = re.findall(r"[A-Za-z0-9]+", line)
+            if tokens:
+                return _sanitize_case_name_tokens(tokens)
+    for line in lines:
+        tokens = [token for token in re.findall(r"[A-Za-z0-9]+", line) if token.isalpha()]
+        if len(tokens) >= 2:
+            return _sanitize_case_name_tokens(tokens[:8])
+    return ""
+
+
 def _compile_raw_sections(
     entries: list[dict[str, Any]],
     label_keys: tuple[str, ...],
@@ -491,6 +549,29 @@ def save_classify_form_names_settings(
     _write_config(config)
 
 
+def load_case_name_settings() -> dict[str, str]:
+    config = _read_config()
+    api_url = str(config.get(CONFIG_KEY_CASE_NAME_API_URL, "") or "").strip()
+    model_id = str(config.get(CONFIG_KEY_CASE_NAME_MODEL_ID, "") or "").strip()
+    api_key = str(config.get(CONFIG_KEY_CASE_NAME_API_KEY, "") or "").strip()
+    prompt = str(config.get(CONFIG_KEY_CASE_NAME_PROMPT, DEFAULT_CASE_NAME_PROMPT) or "").strip()
+    return {
+        "api_url": api_url,
+        "model_id": model_id,
+        "api_key": api_key,
+        "prompt": prompt or DEFAULT_CASE_NAME_PROMPT,
+    }
+
+
+def save_case_name_settings(api_url: str, model_id: str, api_key: str, prompt: str) -> None:
+    config = _read_config()
+    config[CONFIG_KEY_CASE_NAME_API_URL] = api_url
+    config[CONFIG_KEY_CASE_NAME_MODEL_ID] = model_id
+    config[CONFIG_KEY_CASE_NAME_API_KEY] = api_key
+    config[CONFIG_KEY_CASE_NAME_PROMPT] = prompt or DEFAULT_CASE_NAME_PROMPT
+    _write_config(config)
+
+
 def load_selected_pdfs() -> list[Path]:
     config = _read_config()
     raw = config.get(CONFIG_KEY_SELECTED_PDFS)
@@ -602,6 +683,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._prompt_stack = prompt_stack
 
         prompt_definitions = [
+            ("case-name", "Infer Case Name", load_case_name_settings(), DEFAULT_CASE_NAME_PROMPT),
             ("basic", "Classify Basic", load_classifier_settings(), DEFAULT_CLASSIFIER_PROMPT),
             ("dates", "Classify Dates", load_classify_dates_settings(), DEFAULT_CLASSIFY_DATES_PROMPT),
             (
@@ -760,10 +842,18 @@ class SettingsWindow(Adw.ApplicationWindow):
             self._prompt_stack.set_visible_child_name(key)
 
     def _save_settings(self) -> None:
+        case_widgets = self._prompt_editors.get("case-name")
         basic_widgets = self._prompt_editors.get("basic")
         dates_widgets = self._prompt_editors.get("dates")
         report_widgets = self._prompt_editors.get("report-names")
         form_widgets = self._prompt_editors.get("form-names")
+        if case_widgets:
+            save_case_name_settings(
+                case_widgets.api_url_row.get_text().strip(),
+                case_widgets.model_row.get_text().strip(),
+                case_widgets.api_key_row.get_text().strip(),
+                self._prompt_text(case_widgets.prompt_buffer).strip(),
+            )
         if basic_widgets:
             save_classifier_settings(
                 basic_widgets.api_url_row.get_text().strip(),
@@ -840,6 +930,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_one_row.connect("activated", self.on_step_one_clicked)
         listbox.append(self.step_one_row)
 
+        self.step_infer_case_row = Adw.ActionRow(title="Infer case name")
+        self.step_infer_case_row.set_activatable(True)
+        self.step_infer_case_row.connect("activated", self.on_step_infer_case_clicked)
+        listbox.append(self.step_infer_case_row)
+
         self.step_two_row = Adw.ActionRow(title="Create classify basic file")
         self.step_two_row.set_activatable(True)
         self.step_two_row.connect("activated", self.on_step_two_clicked)
@@ -865,7 +960,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_six_row.connect("activated", self.on_step_six_clicked)
         listbox.append(self.step_six_row)
 
-        self.step_seven_row = Adw.ActionRow(title="Derive hearing/report Boundaries")
+        self.step_seven_row = Adw.ActionRow(title="Derive hearing/report boundaries")
         self.step_seven_row.set_activatable(True)
         self.step_seven_row.connect("activated", self.on_step_seven_clicked)
         listbox.append(self.step_seven_row)
@@ -971,6 +1066,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_one_row.set_sensitive(False)
         threading.Thread(target=self._run_step_one, daemon=True).start()
 
+    def on_step_infer_case_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self.step_infer_case_row.set_sensitive(False)
+        threading.Thread(target=self._run_step_infer_case, daemon=True).start()
+
     def _run_step_one(self) -> None:
         try:
             parents = {path.parent for path in self.selected_pdfs}
@@ -991,6 +1093,40 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 1 complete.")
         finally:
             GLib.idle_add(self.step_one_row.set_sensitive, True)
+
+    def _run_step_infer_case(self) -> None:
+        try:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "record_prep"
+            text_dir = root_dir / "text_record"
+            if not text_dir.exists():
+                raise FileNotFoundError("Run Step 1 to generate text files first.")
+            settings = load_case_name_settings()
+            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
+                raise ValueError("Configure case name API URL, model ID, and API key in Settings.")
+            text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)[:3]
+            if not text_files:
+                raise FileNotFoundError("No text files found to infer case name.")
+            combined = "\n".join(
+                path.read_text(encoding="utf-8", errors="ignore") for path in text_files
+            )
+            response_text = self._request_plain_text(settings, combined)
+            case_name = _sanitize_case_name_value(response_text)
+            if not case_name:
+                case_name = _sanitize_case_name_value(_infer_case_name_from_text(combined))
+            if not case_name:
+                raise ValueError("Unable to infer case name from first three pages.")
+            (root_dir / "case_name.txt").write_text(case_name, encoding="utf-8")
+            GLib.idle_add(self.selected_label.set_text, f"Selected: {case_name}")
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Infer case name failed: {exc}")
+        else:
+            GLib.idle_add(self.show_toast, "Infer case name complete.")
+        finally:
+            GLib.idle_add(self.step_infer_case_row.set_sensitive, True)
 
     def on_step_two_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
@@ -1531,6 +1667,38 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 result[expected_key] = ""
         return result
+
+    def _request_plain_text(self, settings: dict[str, str], content: str) -> str:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {settings['api_key']}",
+            "User-Agent": "RecordPrep/0.1",
+        }
+        body = {
+            "model": settings["model_id"],
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": settings["prompt"]},
+                {"role": "user", "content": content},
+            ],
+        }
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(settings["api_url"], data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except urllib.error.HTTPError as exc:
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                error_body = ""
+            detail = error_body.strip() or exc.reason or "request failed"
+            raise RuntimeError(f"Classifier request failed: HTTP {exc.code} {detail}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Classifier request failed: {exc}") from exc
+        return self._extract_response_text(payload).strip()
 
     def _extract_response_text(self, payload: Any) -> str:
         if isinstance(payload, dict):
