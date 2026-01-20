@@ -61,6 +61,10 @@ CONFIG_KEY_SUMMARIZE_API_KEY = "summarize_api_key"
 CONFIG_KEY_SUMMARIZE_HEARINGS_PROMPT = "summarize_hearings_prompt"
 CONFIG_KEY_SUMMARIZE_REPORTS_PROMPT = "summarize_reports_prompt"
 CONFIG_KEY_SUMMARIZE_CHUNK_SIZE = "summarize_chunk_size"
+CONFIG_KEY_OVERVIEW_API_URL = "overview_api_url"
+CONFIG_KEY_OVERVIEW_MODEL_ID = "overview_model_id"
+CONFIG_KEY_OVERVIEW_API_KEY = "overview_api_key"
+CONFIG_KEY_OVERVIEW_PROMPT = "overview_prompt"
 CONFIG_KEY_SELECTED_PDFS = "selected_pdfs"
 DEFAULT_CLASSIFIER_PROMPT = (
     "You are labeling a single page of an OCR'd legal transcript. "
@@ -137,6 +141,15 @@ DEFAULT_SUMMARIZE_REPORTS_PROMPT = (
     "Do not begin with prefatory language. Here are the reports:"
 )
 DEFAULT_SUMMARIZE_CHUNK_SIZE = 15
+DEFAULT_OVERVIEW_PROMPT = (
+    "I will provide you with summaries from a legal case. Please provide concise "
+    "details about the case in the form of three paragraphs. In the first paragraph, "
+    "identify the parties and specify which attorney represented them. Identify each "
+    "attorney by name rather than just their law firm. In the second paragraph, "
+    "provide a procedural history of the case. In the third paragraph, provide a "
+    "factual history of the case. Do not add any other commentary. Okay, here are the "
+    "summaries:"
+)
 
 
 def _unique_in_order(items: list[str]) -> list[str]:
@@ -820,6 +833,14 @@ class SummarizeSettingsWidgets:
     reports_prompt_buffer: Gtk.TextBuffer
 
 
+@dataclass
+class OverviewSettingsWidgets:
+    api_url_row: Adw.EntryRow
+    model_row: Adw.EntryRow
+    api_key_row: Adw.EntryRow
+    prompt_buffer: Gtk.TextBuffer
+
+
 def load_optimize_settings() -> dict[str, str]:
     config = _read_config()
     api_url = str(config.get(CONFIG_KEY_OPTIMIZE_API_URL, "") or "").strip()
@@ -909,6 +930,34 @@ def save_summarize_settings(
     config[CONFIG_KEY_SUMMARIZE_REPORTS_PROMPT] = (
         reports_prompt or DEFAULT_SUMMARIZE_REPORTS_PROMPT
     )
+    _write_config(config)
+
+
+def load_overview_settings() -> dict[str, str]:
+    config = _read_config()
+    api_url = str(config.get(CONFIG_KEY_OVERVIEW_API_URL, "") or "").strip()
+    model_id = str(config.get(CONFIG_KEY_OVERVIEW_MODEL_ID, "") or "").strip()
+    api_key = str(config.get(CONFIG_KEY_OVERVIEW_API_KEY, "") or "").strip()
+    prompt = str(config.get(CONFIG_KEY_OVERVIEW_PROMPT, DEFAULT_OVERVIEW_PROMPT) or "").strip()
+    return {
+        "api_url": api_url,
+        "model_id": model_id,
+        "api_key": api_key,
+        "prompt": prompt or DEFAULT_OVERVIEW_PROMPT,
+    }
+
+
+def save_overview_settings(
+    api_url: str,
+    model_id: str,
+    api_key: str,
+    prompt: str,
+) -> None:
+    config = _read_config()
+    config[CONFIG_KEY_OVERVIEW_API_URL] = api_url
+    config[CONFIG_KEY_OVERVIEW_MODEL_ID] = model_id
+    config[CONFIG_KEY_OVERVIEW_API_KEY] = api_key
+    config[CONFIG_KEY_OVERVIEW_PROMPT] = prompt or DEFAULT_OVERVIEW_PROMPT
     _write_config(config)
 
 
@@ -1045,6 +1094,20 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._prompt_row_keys[summarize_row] = "summarize"
         summarize_page = self._build_summarize_prompt_page(load_summarize_settings())
         prompt_stack.add_named(summarize_page, "summarize")
+
+        overview_row = Gtk.ListBoxRow()
+        overview_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        overview_box.set_margin_top(8)
+        overview_box.set_margin_bottom(8)
+        overview_box.set_margin_start(12)
+        overview_box.set_margin_end(12)
+        overview_label = Gtk.Label(label="Case Overview", xalign=0)
+        overview_box.append(overview_label)
+        overview_row.set_child(overview_box)
+        prompt_list.append(overview_row)
+        self._prompt_row_keys[overview_row] = "overview"
+        overview_page = self._build_overview_prompt_page(load_overview_settings())
+        prompt_stack.add_named(overview_page, "overview")
 
         if first_row is not None:
             prompt_list.select_row(first_row)
@@ -1304,6 +1367,61 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         return page
 
+    def _build_overview_prompt_page(self, settings: dict[str, str]) -> Gtk.Widget:
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page_box.set_margin_top(12)
+        page_box.set_margin_bottom(12)
+        page_box.set_margin_start(12)
+        page_box.set_margin_end(12)
+        page_box.set_vexpand(True)
+
+        title_label = Gtk.Label(label="Case Overview", xalign=0)
+        title_label.add_css_class("title-3")
+        page_box.append(title_label)
+
+        credentials_group = Adw.PreferencesGroup(title="Credentials")
+        credentials_group.add_css_class("list-stack")
+        credentials_group.set_hexpand(True)
+        page_box.append(credentials_group)
+
+        api_url_row = Adw.EntryRow(title="API URL")
+        api_url_row.set_text(settings.get("api_url", ""))
+        credentials_group.add(api_url_row)
+
+        model_row = Adw.EntryRow(title="Model ID")
+        model_row.set_text(settings.get("model_id", ""))
+        credentials_group.add(model_row)
+
+        api_key_row = self._build_password_row("API Key")
+        api_key_row.set_text(settings.get("api_key", ""))
+        credentials_group.add(api_key_row)
+
+        prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        prompt_section.set_hexpand(True)
+        prompt_section.set_vexpand(True)
+        prompt_label = Gtk.Label(label="Prompt", xalign=0)
+        prompt_label.add_css_class("dim-label")
+        prompt_section.append(prompt_label)
+        prompt_scroller, buffer = self._build_prompt_editor(
+            settings.get("prompt") or DEFAULT_OVERVIEW_PROMPT
+        )
+        prompt_section.append(prompt_scroller)
+        page_box.append(prompt_section)
+
+        page = Gtk.ScrolledWindow()
+        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page.set_hexpand(True)
+        page.set_vexpand(True)
+        page.set_child(page_box)
+
+        self._overview_widgets = OverviewSettingsWidgets(
+            api_url_row=api_url_row,
+            model_row=model_row,
+            api_key_row=api_key_row,
+            prompt_buffer=buffer,
+        )
+        return page
+
     def _prompt_text(self, buffer: Gtk.TextBuffer) -> str:
         start, end = buffer.get_bounds()
         return buffer.get_text(start, end, True)
@@ -1323,6 +1441,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         form_widgets = self._prompt_editors.get("form-names")
         optimize_widgets = getattr(self, "_optimize_widgets", None)
         summarize_widgets = getattr(self, "_summarize_widgets", None)
+        overview_widgets = getattr(self, "_overview_widgets", None)
         if case_widgets:
             save_case_name_settings(
                 case_widgets.api_url_row.get_text().strip(),
@@ -1375,6 +1494,13 @@ class SettingsWindow(Adw.ApplicationWindow):
                 summarize_widgets.chunk_size_row.get_text().strip(),
                 self._prompt_text(summarize_widgets.hearings_prompt_buffer).strip(),
                 self._prompt_text(summarize_widgets.reports_prompt_buffer).strip(),
+            )
+        if overview_widgets:
+            save_overview_settings(
+                overview_widgets.api_url_row.get_text().strip(),
+                overview_widgets.model_row.get_text().strip(),
+                overview_widgets.api_key_row.get_text().strip(),
+                self._prompt_text(overview_widgets.prompt_buffer).strip(),
             )
         if self._on_saved:
             self._on_saved()
@@ -1523,6 +1649,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_ten_row.set_activatable(True)
         self.step_ten_row.connect("activated", self.on_step_ten_clicked)
         listbox.append(self.step_ten_row)
+
+        self.step_eleven_row = Adw.ActionRow(
+            title="Case overview",
+            subtitle="Create a three-paragraph overview for RAG context.",
+        )
+        self.step_eleven_row.set_activatable(True)
+        self.step_eleven_row.connect("activated", self.on_step_eleven_clicked)
+        listbox.append(self.step_eleven_row)
 
         self._setup_menu(app)
         self._load_selected_pdfs()
@@ -1813,6 +1947,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_ten_row.set_sensitive(False)
         self._start_step(self.step_ten_row)
         threading.Thread(target=self._run_step_ten, daemon=True).start()
+
+    def on_step_eleven_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self.step_eleven_row.set_sensitive(False)
+        self._start_step(self.step_eleven_row)
+        threading.Thread(target=self._run_step_eleven, daemon=True).start()
 
     def _run_step_two(self) -> None:
         try:
@@ -2419,6 +2561,55 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 10 complete.")
         finally:
             GLib.idle_add(self.step_ten_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
+
+    def _run_step_eleven(self) -> None:
+        try:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "record_prep"
+            summarization_dir = root_dir / "summarization"
+            summaries_path = summarization_dir / "summarized_hearings.txt"
+            reports_path = summarization_dir / "summarized_reports.txt"
+            if not summaries_path.exists() or not reports_path.exists():
+                raise FileNotFoundError("Run Step 10 to generate summarized files first.")
+            settings = load_overview_settings()
+            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
+                raise ValueError("Configure overview API URL, model ID, and API key in Settings.")
+            hearings_text = summaries_path.read_text(encoding="utf-8", errors="ignore")
+            reports_text = reports_path.read_text(encoding="utf-8", errors="ignore")
+            combined = "\n\n".join(
+                [
+                    "Summarized Hearings:",
+                    hearings_text.strip(),
+                    "",
+                    "Summarized Reports:",
+                    reports_text.strip(),
+                ]
+            ).strip()
+            overview = self._request_plain_text(
+                {
+                    "api_url": settings["api_url"],
+                    "model_id": settings["model_id"],
+                    "api_key": settings["api_key"],
+                    "prompt": settings["prompt"],
+                },
+                combined,
+            )
+            if not overview:
+                raise ValueError("Overview response was empty.")
+            (root_dir / "case_overview.txt").write_text(
+                _collapse_blank_lines(overview),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Case overview failed: {exc}")
+        else:
+            GLib.idle_add(self.show_toast, "Case overview complete.")
+        finally:
+            GLib.idle_add(self.step_eleven_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
 
     def _append_boundary_entry(
