@@ -55,6 +55,12 @@ CONFIG_KEY_OPTIMIZE_API_KEY = "optimize_api_key"
 CONFIG_KEY_OPTIMIZE_ATTORNEYS_PROMPT = "optimize_attorneys_prompt"
 CONFIG_KEY_OPTIMIZE_HEARINGS_PROMPT = "optimize_hearings_prompt"
 CONFIG_KEY_OPTIMIZE_REPORTS_PROMPT = "optimize_reports_prompt"
+CONFIG_KEY_SUMMARIZE_API_URL = "summarize_api_url"
+CONFIG_KEY_SUMMARIZE_MODEL_ID = "summarize_model_id"
+CONFIG_KEY_SUMMARIZE_API_KEY = "summarize_api_key"
+CONFIG_KEY_SUMMARIZE_HEARINGS_PROMPT = "summarize_hearings_prompt"
+CONFIG_KEY_SUMMARIZE_REPORTS_PROMPT = "summarize_reports_prompt"
+CONFIG_KEY_SUMMARIZE_CHUNK_SIZE = "summarize_chunk_size"
 CONFIG_KEY_SELECTED_PDFS = "selected_pdfs"
 DEFAULT_CLASSIFIER_PROMPT = (
     "You are labeling a single page of an OCR'd legal transcript. "
@@ -115,6 +121,22 @@ DEFAULT_OPTIMIZE_REPORTS_PROMPT = (
     "Each paragraph must begin with 'Reporting:' followed by a space and the verbatim text. "
     "Do not add commentary or change wording."
 )
+DEFAULT_SUMMARIZE_HEARINGS_PROMPT = (
+    "Summarize the following court hearing in one very concise paragraph using plain "
+    "and simple English. Include short direct quotes (3-6 words) from the hearing to "
+    "highlight legally significant statements. Each quote must be in quotation marks "
+    "and must be verbatim. Do not use ellipses. Do not add commentary or markdown. "
+    "Do not begin with prefatory language. Do not include the hearing date in the summary. "
+    "Here is the hearing:"
+)
+DEFAULT_SUMMARIZE_REPORTS_PROMPT = (
+    "Summarize the following reports in one very concise paragraph using plain "
+    "and simple English. Include short direct quotes (5-10 words) from the reports to "
+    "highlight legally significant statements. Each quote must be in quotation marks "
+    "and must be verbatim. Do not use ellipses. Do not add commentary or markdown. "
+    "Do not begin with prefatory language. Here are the reports:"
+)
+DEFAULT_SUMMARIZE_CHUNK_SIZE = 15
 
 
 def _unique_in_order(items: list[str]) -> list[str]:
@@ -403,6 +425,65 @@ def _chunk_sentences(sentences: list[str], max_chars: int) -> list[str]:
 
 def _collapse_blank_lines(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).rstrip() + "\n"
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    chunks = re.split(r"\n\s*\n", text.strip())
+    return [chunk.strip() for chunk in chunks if chunk.strip()]
+
+
+def _chunk_paragraphs(paragraphs: list[str], max_count: int) -> list[str]:
+    grouped: list[str] = []
+    for index in range(0, len(paragraphs), max_count):
+        grouped.append("\n\n".join(paragraphs[index : index + max_count]))
+    return grouped
+
+
+def _strip_hearing_date_prefix(text: str) -> tuple[str, str | None]:
+    match = re.match(r"^\s*Hearing date:\s*([^.\n]+)\.\s*(.*)$", text, re.DOTALL)
+    if match:
+        return match.group(2).strip(), match.group(1).strip()
+    return text.strip(), None
+
+
+def _remove_hearing_date_mentions(text: str) -> str:
+    return re.sub(
+        r"Hearing date:\s*[^.\n]{3,80}\.?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _normalize_hearing_date(value: str) -> str:
+    cleaned = re.sub(
+        r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+",
+        "",
+        value.strip(),
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _remove_standalone_date_lines(text: str) -> str:
+    if not text:
+        return text
+    date_patterns = (
+        r"^[A-Za-z]+\s+\d{1,2},\s*\d{4}$",
+        r"^[A-Za-z]+\s+\d{1,2}\s+\d{4}$",
+        r"^\d{1,2}/\d{1,2}/\d{2,4}$",
+        r"^Hearing date:\s*.+$",
+    )
+    cleaned_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append("")
+            continue
+        if any(re.match(pattern, stripped, re.IGNORECASE) for pattern in date_patterns):
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines).strip()
 
 
 def _infer_case_name_from_text(text: str) -> str:
@@ -729,6 +810,16 @@ class OptimizeSettingsWidgets:
     reports_prompt_buffer: Gtk.TextBuffer
 
 
+@dataclass
+class SummarizeSettingsWidgets:
+    api_url_row: Adw.EntryRow
+    model_row: Adw.EntryRow
+    api_key_row: Adw.EntryRow
+    chunk_size_row: Adw.EntryRow
+    hearings_prompt_buffer: Gtk.TextBuffer
+    reports_prompt_buffer: Gtk.TextBuffer
+
+
 def load_optimize_settings() -> dict[str, str]:
     config = _read_config()
     api_url = str(config.get(CONFIG_KEY_OPTIMIZE_API_URL, "") or "").strip()
@@ -768,6 +859,56 @@ def save_optimize_settings(
     config[CONFIG_KEY_OPTIMIZE_ATTORNEYS_PROMPT] = attorneys_prompt or DEFAULT_OPTIMIZE_ATTORNEYS_PROMPT
     config[CONFIG_KEY_OPTIMIZE_HEARINGS_PROMPT] = hearings_prompt or DEFAULT_OPTIMIZE_HEARINGS_PROMPT
     config[CONFIG_KEY_OPTIMIZE_REPORTS_PROMPT] = reports_prompt or DEFAULT_OPTIMIZE_REPORTS_PROMPT
+    _write_config(config)
+
+
+def load_summarize_settings() -> dict[str, str]:
+    config = _read_config()
+    api_url = str(config.get(CONFIG_KEY_SUMMARIZE_API_URL, "") or "").strip()
+    model_id = str(config.get(CONFIG_KEY_SUMMARIZE_MODEL_ID, "") or "").strip()
+    api_key = str(config.get(CONFIG_KEY_SUMMARIZE_API_KEY, "") or "").strip()
+    chunk_size_raw = str(config.get(CONFIG_KEY_SUMMARIZE_CHUNK_SIZE, "") or "").strip()
+    chunk_size = DEFAULT_SUMMARIZE_CHUNK_SIZE
+    if chunk_size_raw:
+        try:
+            chunk_size = max(1, int(chunk_size_raw))
+        except ValueError:
+            chunk_size = DEFAULT_SUMMARIZE_CHUNK_SIZE
+    hearings_prompt = str(
+        config.get(CONFIG_KEY_SUMMARIZE_HEARINGS_PROMPT, DEFAULT_SUMMARIZE_HEARINGS_PROMPT) or ""
+    ).strip()
+    reports_prompt = str(
+        config.get(CONFIG_KEY_SUMMARIZE_REPORTS_PROMPT, DEFAULT_SUMMARIZE_REPORTS_PROMPT) or ""
+    ).strip()
+    return {
+        "api_url": api_url,
+        "model_id": model_id,
+        "api_key": api_key,
+        "chunk_size": str(chunk_size),
+        "hearings_prompt": hearings_prompt or DEFAULT_SUMMARIZE_HEARINGS_PROMPT,
+        "reports_prompt": reports_prompt or DEFAULT_SUMMARIZE_REPORTS_PROMPT,
+    }
+
+
+def save_summarize_settings(
+    api_url: str,
+    model_id: str,
+    api_key: str,
+    chunk_size: str,
+    hearings_prompt: str,
+    reports_prompt: str,
+) -> None:
+    config = _read_config()
+    config[CONFIG_KEY_SUMMARIZE_API_URL] = api_url
+    config[CONFIG_KEY_SUMMARIZE_MODEL_ID] = model_id
+    config[CONFIG_KEY_SUMMARIZE_API_KEY] = api_key
+    config[CONFIG_KEY_SUMMARIZE_CHUNK_SIZE] = chunk_size
+    config[CONFIG_KEY_SUMMARIZE_HEARINGS_PROMPT] = (
+        hearings_prompt or DEFAULT_SUMMARIZE_HEARINGS_PROMPT
+    )
+    config[CONFIG_KEY_SUMMARIZE_REPORTS_PROMPT] = (
+        reports_prompt or DEFAULT_SUMMARIZE_REPORTS_PROMPT
+    )
     _write_config(config)
 
 
@@ -890,6 +1031,20 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._prompt_row_keys[optimize_row] = "optimize"
         optimize_page = self._build_optimize_prompt_page(load_optimize_settings())
         prompt_stack.add_named(optimize_page, "optimize")
+
+        summarize_row = Gtk.ListBoxRow()
+        summarize_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        summarize_box.set_margin_top(8)
+        summarize_box.set_margin_bottom(8)
+        summarize_box.set_margin_start(12)
+        summarize_box.set_margin_end(12)
+        summarize_label = Gtk.Label(label="Summarize", xalign=0)
+        summarize_box.append(summarize_label)
+        summarize_row.set_child(summarize_box)
+        prompt_list.append(summarize_row)
+        self._prompt_row_keys[summarize_row] = "summarize"
+        summarize_page = self._build_summarize_prompt_page(load_summarize_settings())
+        prompt_stack.add_named(summarize_page, "summarize")
 
         if first_row is not None:
             prompt_list.select_row(first_row)
@@ -1078,6 +1233,77 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         return page
 
+    def _build_summarize_prompt_page(self, settings: dict[str, str]) -> Gtk.Widget:
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page_box.set_margin_top(12)
+        page_box.set_margin_bottom(12)
+        page_box.set_margin_start(12)
+        page_box.set_margin_end(12)
+        page_box.set_vexpand(True)
+
+        title_label = Gtk.Label(label="Summarize", xalign=0)
+        title_label.add_css_class("title-3")
+        page_box.append(title_label)
+
+        credentials_group = Adw.PreferencesGroup(title="Credentials")
+        credentials_group.add_css_class("list-stack")
+        credentials_group.set_hexpand(True)
+        page_box.append(credentials_group)
+
+        api_url_row = Adw.EntryRow(title="API URL")
+        api_url_row.set_text(settings.get("api_url", ""))
+        credentials_group.add(api_url_row)
+
+        model_row = Adw.EntryRow(title="Model ID")
+        model_row.set_text(settings.get("model_id", ""))
+        credentials_group.add(model_row)
+
+        api_key_row = self._build_password_row("API Key")
+        api_key_row.set_text(settings.get("api_key", ""))
+        credentials_group.add(api_key_row)
+
+        chunk_size_row = Adw.EntryRow(title="Chunk Size (paragraphs)")
+        chunk_size_row.set_text(settings.get("chunk_size", str(DEFAULT_SUMMARIZE_CHUNK_SIZE)))
+        credentials_group.add(chunk_size_row)
+
+        prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        prompt_section.set_hexpand(True)
+        prompt_section.set_vexpand(True)
+
+        hearings_label = Gtk.Label(label="Summarize Hearings Prompt", xalign=0)
+        hearings_label.add_css_class("dim-label")
+        prompt_section.append(hearings_label)
+        hearings_scroller, hearings_buffer = self._build_prompt_editor(
+            settings.get("hearings_prompt") or DEFAULT_SUMMARIZE_HEARINGS_PROMPT
+        )
+        prompt_section.append(hearings_scroller)
+
+        reports_label = Gtk.Label(label="Summarize Reports Prompt", xalign=0)
+        reports_label.add_css_class("dim-label")
+        prompt_section.append(reports_label)
+        reports_scroller, reports_buffer = self._build_prompt_editor(
+            settings.get("reports_prompt") or DEFAULT_SUMMARIZE_REPORTS_PROMPT
+        )
+        prompt_section.append(reports_scroller)
+
+        page_box.append(prompt_section)
+
+        page = Gtk.ScrolledWindow()
+        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page.set_hexpand(True)
+        page.set_vexpand(True)
+        page.set_child(page_box)
+
+        self._summarize_widgets = SummarizeSettingsWidgets(
+            api_url_row=api_url_row,
+            model_row=model_row,
+            api_key_row=api_key_row,
+            chunk_size_row=chunk_size_row,
+            hearings_prompt_buffer=hearings_buffer,
+            reports_prompt_buffer=reports_buffer,
+        )
+        return page
+
     def _prompt_text(self, buffer: Gtk.TextBuffer) -> str:
         start, end = buffer.get_bounds()
         return buffer.get_text(start, end, True)
@@ -1096,6 +1322,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         report_widgets = self._prompt_editors.get("report-names")
         form_widgets = self._prompt_editors.get("form-names")
         optimize_widgets = getattr(self, "_optimize_widgets", None)
+        summarize_widgets = getattr(self, "_summarize_widgets", None)
         if case_widgets:
             save_case_name_settings(
                 case_widgets.api_url_row.get_text().strip(),
@@ -1139,6 +1366,15 @@ class SettingsWindow(Adw.ApplicationWindow):
                 self._prompt_text(optimize_widgets.attorneys_prompt_buffer).strip(),
                 self._prompt_text(optimize_widgets.hearings_prompt_buffer).strip(),
                 self._prompt_text(optimize_widgets.reports_prompt_buffer).strip(),
+            )
+        if summarize_widgets:
+            save_summarize_settings(
+                summarize_widgets.api_url_row.get_text().strip(),
+                summarize_widgets.model_row.get_text().strip(),
+                summarize_widgets.api_key_row.get_text().strip(),
+                summarize_widgets.chunk_size_row.get_text().strip(),
+                self._prompt_text(summarize_widgets.hearings_prompt_buffer).strip(),
+                self._prompt_text(summarize_widgets.reports_prompt_buffer).strip(),
             )
         if self._on_saved:
             self._on_saved()
@@ -1237,6 +1473,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_nine_row.set_activatable(True)
         self.step_nine_row.connect("activated", self.on_step_nine_clicked)
         listbox.append(self.step_nine_row)
+
+        self.step_ten_row = Adw.ActionRow(title="Create summarized hearing/report files")
+        self.step_ten_row.set_activatable(True)
+        self.step_ten_row.connect("activated", self.on_step_ten_clicked)
+        listbox.append(self.step_ten_row)
 
         self._setup_menu(app)
         self._load_selected_pdfs()
@@ -1490,6 +1731,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self.step_nine_row.set_sensitive(False)
         threading.Thread(target=self._run_step_nine, daemon=True).start()
+
+    def on_step_ten_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self.step_ten_row.set_sensitive(False)
+        threading.Thread(target=self._run_step_ten, daemon=True).start()
 
     def _run_step_two(self) -> None:
         try:
@@ -1976,6 +2224,118 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 9 complete.")
         finally:
             GLib.idle_add(self.step_nine_row.set_sensitive, True)
+
+    def _run_step_ten(self) -> None:
+        try:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "record_prep"
+            summarization_dir = root_dir / "summarization"
+            optimized_hearings_path = summarization_dir / "optimized_hearings.txt"
+            optimized_reports_path = summarization_dir / "optimized_reports.txt"
+            if not optimized_hearings_path.exists() or not optimized_reports_path.exists():
+                raise FileNotFoundError("Run Step 9 to generate optimized files first.")
+            settings = load_summarize_settings()
+            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
+                raise ValueError("Configure summarize API URL, model ID, and API key in Settings.")
+            chunk_size = DEFAULT_SUMMARIZE_CHUNK_SIZE
+            chunk_size_raw = settings.get("chunk_size", "")
+            if chunk_size_raw:
+                try:
+                    chunk_size = max(1, int(chunk_size_raw))
+                except ValueError:
+                    chunk_size = DEFAULT_SUMMARIZE_CHUNK_SIZE
+
+            case_name, _root_dir = load_case_context()
+            summary_hearings: list[str] = []
+            summary_reports: list[str] = []
+
+            if case_name:
+                summary_hearings.extend(["RT Summary", case_name, ""])
+            else:
+                summary_hearings.append("RT Summary")
+
+            hearing_paragraphs = _split_paragraphs(
+                optimized_hearings_path.read_text(encoding="utf-8")
+            )
+            hearing_groups: list[tuple[str, list[str]]] = []
+            current_date: str | None = None
+            for paragraph in hearing_paragraphs:
+                cleaned, date_value = _strip_hearing_date_prefix(paragraph)
+                if date_value:
+                    date_value = _normalize_hearing_date(date_value)
+                    if current_date != date_value:
+                        hearing_groups.append((date_value, []))
+                        current_date = date_value
+                if not hearing_groups:
+                    hearing_groups.append(("HEARING", []))
+                hearing_groups[-1][1].append(
+                    _remove_standalone_date_lines(_remove_hearing_date_mentions(cleaned))
+                )
+
+            first_section = True
+            for date_value, paragraphs in hearing_groups:
+                if not first_section:
+                    summary_hearings.append("")
+                summary_hearings.append(date_value or "HEARING")
+                summary_hearings.append("")
+                first_section = False
+                for chunk in _chunk_paragraphs(paragraphs, chunk_size):
+                    response = self._request_plain_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": settings["hearings_prompt"],
+                        },
+                        chunk,
+                    )
+                    if response:
+                        cleaned_response = _remove_hearing_date_mentions(response.strip())
+                        summary_hearings.append(_remove_standalone_date_lines(cleaned_response))
+                        summary_hearings.append("")
+
+            if case_name:
+                summary_reports.extend(["CT Summary", case_name, "", ""])
+            else:
+                summary_reports.extend(["CT Summary", ""])
+
+            report_paragraphs = _split_paragraphs(
+                optimized_reports_path.read_text(encoding="utf-8")
+            )
+            report_paragraphs = [
+                re.sub(r"^Reporting:\s*", "", paragraph) for paragraph in report_paragraphs
+            ]
+            for chunk in _chunk_paragraphs(report_paragraphs, chunk_size):
+                response = self._request_plain_text(
+                    {
+                        "api_url": settings["api_url"],
+                        "model_id": settings["model_id"],
+                        "api_key": settings["api_key"],
+                        "prompt": settings["reports_prompt"],
+                    },
+                    chunk,
+                )
+                if response:
+                    summary_reports.append(response.strip())
+                    summary_reports.append("")
+
+            (summarization_dir / "summarized_hearings.txt").write_text(
+                _collapse_blank_lines("\n".join(summary_hearings)),
+                encoding="utf-8",
+            )
+            (summarization_dir / "summarized_reports.txt").write_text(
+                _collapse_blank_lines("\n".join(summary_reports)),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Step 10 failed: {exc}")
+        else:
+            GLib.idle_add(self.show_toast, "Step 10 complete.")
+        finally:
+            GLib.idle_add(self.step_ten_row.set_sensitive, True)
 
     def _append_boundary_entry(
         self,
