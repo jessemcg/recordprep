@@ -1391,9 +1391,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         header_bar = Adw.HeaderBar()
 
-        self.file_button = Gtk.Button(label="Choose PDF(s)")
+        self.file_button = Gtk.Button.new_from_icon_name("list-add-symbolic")
+        self.file_button.set_tooltip_text("Choose PDF(s)")
+        self.file_button.add_css_class("flat")
         self.file_button.connect("clicked", self.on_choose_pdf)
         header_bar.pack_start(self.file_button)
+
+        status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.status_spinner = Gtk.Spinner()
+        self.status_label = Gtk.Label(label="Idle", xalign=0)
+        status_box.append(self.status_spinner)
+        status_box.append(self.status_label)
+        header_bar.set_title_widget(status_box)
 
         self.menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic")
         header_bar.pack_end(self.menu_button)
@@ -1518,6 +1527,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._setup_menu(app)
         self._load_selected_pdfs()
         self._load_case_context()
+        self._set_status(APPLICATION_NAME, False)
 
     def _setup_menu(self, app: Adw.Application) -> None:
         menu = Gio.Menu()
@@ -1557,6 +1567,20 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
     def show_toast(self, message: str) -> None:
         self.toast_overlay.add_toast(Adw.Toast(title=message))
+
+    def _set_status(self, message: str, active: bool) -> None:
+        self.status_label.set_text(message)
+        if active:
+            self.status_spinner.start()
+        else:
+            self.status_spinner.stop()
+
+    def _start_step(self, row: Adw.ActionRow) -> None:
+        title = row.get_title() or "Working"
+        self._set_status(f"Working: {title}", True)
+
+    def _stop_status(self) -> None:
+        self._set_status(APPLICATION_NAME, False)
 
     def on_choose_pdf(self, _button: Gtk.Button) -> None:
         dialog = Gtk.FileDialog(title="Choose PDF files")
@@ -1615,6 +1639,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_one_row.set_sensitive(False)
+        self._start_step(self.step_one_row)
         threading.Thread(target=self._run_step_one, daemon=True).start()
 
     def on_step_strip_nonstandard_clicked(self, _row: Adw.ActionRow) -> None:
@@ -1622,6 +1647,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_strip_nonstandard_row.set_sensitive(False)
+        self._start_step(self.step_strip_nonstandard_row)
         threading.Thread(target=self._run_step_strip_nonstandard, daemon=True).start()
 
     def on_step_infer_case_clicked(self, _row: Adw.ActionRow) -> None:
@@ -1629,6 +1655,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_infer_case_row.set_sensitive(False)
+        self._start_step(self.step_infer_case_row)
         threading.Thread(target=self._run_step_infer_case, daemon=True).start()
 
     def _run_step_one(self) -> None:
@@ -1651,6 +1678,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 1 complete.")
         finally:
             GLib.idle_add(self.step_one_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _run_step_strip_nonstandard(self) -> None:
         try:
@@ -1676,6 +1704,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Strip non-standard characters complete.")
         finally:
             GLib.idle_add(self.step_strip_nonstandard_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _run_step_infer_case(self) -> None:
         try:
@@ -1711,12 +1740,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Infer case name complete.")
         finally:
             GLib.idle_add(self.step_infer_case_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def on_step_two_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
         self.step_two_row.set_sensitive(False)
+        self._start_step(self.step_two_row)
         threading.Thread(target=self._run_step_two, daemon=True).start()
 
     def on_step_three_clicked(self, _row: Adw.ActionRow) -> None:
@@ -1724,6 +1755,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_three_row.set_sensitive(False)
+        self._start_step(self.step_three_row)
         threading.Thread(target=self._run_step_three, daemon=True).start()
 
     def on_step_four_clicked(self, _row: Adw.ActionRow) -> None:
@@ -1731,6 +1763,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_four_row.set_sensitive(False)
+        self._start_step(self.step_four_row)
         threading.Thread(target=self._run_step_four, daemon=True).start()
 
     def on_step_five_clicked(self, _row: Adw.ActionRow) -> None:
@@ -1738,6 +1771,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_five_row.set_sensitive(False)
+        self._start_step(self.step_five_row)
         threading.Thread(target=self._run_step_five, daemon=True).start()
 
     def on_step_six_clicked(self, _row: Adw.ActionRow) -> None:
@@ -1745,6 +1779,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_six_row.set_sensitive(False)
+        self._start_step(self.step_six_row)
         threading.Thread(target=self._run_step_six, daemon=True).start()
 
     def on_step_seven_clicked(self, _row: Adw.ActionRow) -> None:
@@ -1752,6 +1787,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_seven_row.set_sensitive(False)
+        self._start_step(self.step_seven_row)
         threading.Thread(target=self._run_step_seven, daemon=True).start()
 
     def on_step_eight_clicked(self, _row: Adw.ActionRow) -> None:
@@ -1759,6 +1795,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_eight_row.set_sensitive(False)
+        self._start_step(self.step_eight_row)
         threading.Thread(target=self._run_step_eight, daemon=True).start()
 
     def on_step_nine_clicked(self, _row: Adw.ActionRow) -> None:
@@ -1766,6 +1803,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_nine_row.set_sensitive(False)
+        self._start_step(self.step_nine_row)
         threading.Thread(target=self._run_step_nine, daemon=True).start()
 
     def on_step_ten_clicked(self, _row: Adw.ActionRow) -> None:
@@ -1773,6 +1811,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast("Choose PDF files first.")
             return
         self.step_ten_row.set_sensitive(False)
+        self._start_step(self.step_ten_row)
         threading.Thread(target=self._run_step_ten, daemon=True).start()
 
     def _run_step_two(self) -> None:
@@ -1807,6 +1846,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 2 complete.")
         finally:
             GLib.idle_add(self.step_two_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _run_step_three(self) -> None:
         try:
@@ -1852,6 +1892,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 3 complete.")
         finally:
             GLib.idle_add(self.step_three_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _run_step_four(self) -> None:
         try:
@@ -1897,6 +1938,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 4 complete.")
         finally:
             GLib.idle_add(self.step_four_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _run_step_five(self) -> None:
         try:
@@ -1942,6 +1984,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 5 complete.")
         finally:
             GLib.idle_add(self.step_five_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _run_step_six(self) -> None:
         try:
@@ -2030,6 +2073,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 6 complete.")
         finally:
             GLib.idle_add(self.step_six_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _run_step_seven(self) -> None:
         try:
@@ -2132,6 +2176,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 7 complete.")
         finally:
             GLib.idle_add(self.step_seven_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _run_step_eight(self) -> None:
         try:
@@ -2168,6 +2213,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 8 complete.")
         finally:
             GLib.idle_add(self.step_eight_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _run_step_nine(self) -> None:
         try:
@@ -2260,6 +2306,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 9 complete.")
         finally:
             GLib.idle_add(self.step_nine_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _run_step_ten(self) -> None:
         try:
@@ -2372,6 +2419,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 10 complete.")
         finally:
             GLib.idle_add(self.step_ten_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
 
     def _append_boundary_entry(
         self,
