@@ -65,6 +65,8 @@ CONFIG_KEY_OVERVIEW_API_URL = "overview_api_url"
 CONFIG_KEY_OVERVIEW_MODEL_ID = "overview_model_id"
 CONFIG_KEY_OVERVIEW_API_KEY = "overview_api_key"
 CONFIG_KEY_OVERVIEW_PROMPT = "overview_prompt"
+CONFIG_KEY_EMBEDDINGS_VOYAGE_API_KEY = "embeddings_voyage_api_key"
+CONFIG_KEY_EMBEDDINGS_VOYAGE_MODEL = "embeddings_voyage_model"
 CONFIG_KEY_SELECTED_PDFS = "selected_pdfs"
 DEFAULT_CLASSIFIER_PROMPT = (
     "You are labeling a single page of an OCR'd legal transcript. "
@@ -150,6 +152,7 @@ DEFAULT_OVERVIEW_PROMPT = (
     "factual history of the case. Do not add any other commentary. Okay, here are the "
     "summaries:"
 )
+DEFAULT_EMBEDDINGS_VOYAGE_MODEL = "voyage-law-2"
 
 
 def _unique_in_order(items: list[str]) -> list[str]:
@@ -841,6 +844,12 @@ class OverviewSettingsWidgets:
     prompt_buffer: Gtk.TextBuffer
 
 
+@dataclass
+class EmbeddingsSettingsWidgets:
+    voyage_model_row: Adw.EntryRow
+    voyage_key_row: Adw.EntryRow
+
+
 def load_optimize_settings() -> dict[str, str]:
     config = _read_config()
     api_url = str(config.get(CONFIG_KEY_OPTIMIZE_API_URL, "") or "").strip()
@@ -958,6 +967,28 @@ def save_overview_settings(
     config[CONFIG_KEY_OVERVIEW_MODEL_ID] = model_id
     config[CONFIG_KEY_OVERVIEW_API_KEY] = api_key
     config[CONFIG_KEY_OVERVIEW_PROMPT] = prompt or DEFAULT_OVERVIEW_PROMPT
+    _write_config(config)
+
+
+def load_embeddings_settings() -> dict[str, str]:
+    config = _read_config()
+    voyage_key = str(config.get(CONFIG_KEY_EMBEDDINGS_VOYAGE_API_KEY, "") or "").strip()
+    voyage_model = str(
+        config.get(CONFIG_KEY_EMBEDDINGS_VOYAGE_MODEL, DEFAULT_EMBEDDINGS_VOYAGE_MODEL) or ""
+    ).strip()
+    return {
+        "voyage_api_key": voyage_key,
+        "voyage_model": voyage_model or DEFAULT_EMBEDDINGS_VOYAGE_MODEL,
+    }
+
+
+def save_embeddings_settings(
+    voyage_api_key: str,
+    voyage_model: str,
+) -> None:
+    config = _read_config()
+    config[CONFIG_KEY_EMBEDDINGS_VOYAGE_API_KEY] = voyage_api_key
+    config[CONFIG_KEY_EMBEDDINGS_VOYAGE_MODEL] = voyage_model or DEFAULT_EMBEDDINGS_VOYAGE_MODEL
     _write_config(config)
 
 
@@ -1108,6 +1139,20 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._prompt_row_keys[overview_row] = "overview"
         overview_page = self._build_overview_prompt_page(load_overview_settings())
         prompt_stack.add_named(overview_page, "overview")
+
+        embeddings_row = Gtk.ListBoxRow()
+        embeddings_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        embeddings_box.set_margin_top(8)
+        embeddings_box.set_margin_bottom(8)
+        embeddings_box.set_margin_start(12)
+        embeddings_box.set_margin_end(12)
+        embeddings_label = Gtk.Label(label="Embeddings", xalign=0)
+        embeddings_box.append(embeddings_label)
+        embeddings_row.set_child(embeddings_box)
+        prompt_list.append(embeddings_row)
+        self._prompt_row_keys[embeddings_row] = "embeddings"
+        embeddings_page = self._build_embeddings_prompt_page(load_embeddings_settings())
+        prompt_stack.add_named(embeddings_page, "embeddings")
 
         if first_row is not None:
             prompt_list.select_row(first_row)
@@ -1422,6 +1467,43 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         return page
 
+    def _build_embeddings_prompt_page(self, settings: dict[str, str]) -> Gtk.Widget:
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page_box.set_margin_top(12)
+        page_box.set_margin_bottom(12)
+        page_box.set_margin_start(12)
+        page_box.set_margin_end(12)
+        page_box.set_vexpand(True)
+
+        title_label = Gtk.Label(label="Embeddings", xalign=0)
+        title_label.add_css_class("title-3")
+        page_box.append(title_label)
+
+        voyage_group = Adw.PreferencesGroup(title="Voyage Embeddings")
+        voyage_group.add_css_class("list-stack")
+        voyage_group.set_hexpand(True)
+        page_box.append(voyage_group)
+
+        voyage_model_row = Adw.EntryRow(title="Voyage Model")
+        voyage_model_row.set_text(settings.get("voyage_model", DEFAULT_EMBEDDINGS_VOYAGE_MODEL))
+        voyage_group.add(voyage_model_row)
+
+        voyage_key_row = self._build_password_row("Voyage API Key")
+        voyage_key_row.set_text(settings.get("voyage_api_key", ""))
+        voyage_group.add(voyage_key_row)
+
+        page = Gtk.ScrolledWindow()
+        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page.set_hexpand(True)
+        page.set_vexpand(True)
+        page.set_child(page_box)
+
+        self._embeddings_widgets = EmbeddingsSettingsWidgets(
+            voyage_model_row=voyage_model_row,
+            voyage_key_row=voyage_key_row,
+        )
+        return page
+
     def _prompt_text(self, buffer: Gtk.TextBuffer) -> str:
         start, end = buffer.get_bounds()
         return buffer.get_text(start, end, True)
@@ -1442,6 +1524,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         optimize_widgets = getattr(self, "_optimize_widgets", None)
         summarize_widgets = getattr(self, "_summarize_widgets", None)
         overview_widgets = getattr(self, "_overview_widgets", None)
+        embeddings_widgets = getattr(self, "_embeddings_widgets", None)
         if case_widgets:
             save_case_name_settings(
                 case_widgets.api_url_row.get_text().strip(),
@@ -1501,6 +1584,11 @@ class SettingsWindow(Adw.ApplicationWindow):
                 overview_widgets.model_row.get_text().strip(),
                 overview_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(overview_widgets.prompt_buffer).strip(),
+            )
+        if embeddings_widgets:
+            save_embeddings_settings(
+                embeddings_widgets.voyage_key_row.get_text().strip(),
+                embeddings_widgets.voyage_model_row.get_text().strip(),
             )
         if self._on_saved:
             self._on_saved()
@@ -1657,6 +1745,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_eleven_row.set_activatable(True)
         self.step_eleven_row.connect("activated", self.on_step_eleven_clicked)
         listbox.append(self.step_eleven_row)
+
+        self.step_twelve_row = Adw.ActionRow(
+            title="Create embeddings",
+            subtitle="Build a VoyageAI/Chroma vector store from optimized text.",
+        )
+        self.step_twelve_row.set_activatable(True)
+        self.step_twelve_row.connect("activated", self.on_step_twelve_clicked)
+        listbox.append(self.step_twelve_row)
 
         self._setup_menu(app)
         self._load_selected_pdfs()
@@ -1955,6 +2051,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_eleven_row.set_sensitive(False)
         self._start_step(self.step_eleven_row)
         threading.Thread(target=self._run_step_eleven, daemon=True).start()
+
+    def on_step_twelve_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self.step_twelve_row.set_sensitive(False)
+        self._start_step(self.step_twelve_row)
+        threading.Thread(target=self._run_step_twelve, daemon=True).start()
 
     def _run_step_two(self) -> None:
         try:
@@ -2571,10 +2675,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
             summarization_dir = root_dir / "summarization"
-            summaries_path = summarization_dir / "summarized_hearings.txt"
-            reports_path = summarization_dir / "summarized_reports.txt"
-            if not summaries_path.exists() or not reports_path.exists():
-                raise FileNotFoundError("Run Step 10 to generate summarized files first.")
+            hearings_path = summarization_dir / "optimized_hearings.txt"
+            reports_path = summarization_dir / "optimized_reports.txt"
+            if not hearings_path.exists() or not reports_path.exists():
+                raise FileNotFoundError("Run Step 9 to generate optimized files first.")
             settings = load_overview_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure overview API URL, model ID, and API key in Settings.")
@@ -2610,6 +2714,84 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Case overview complete.")
         finally:
             GLib.idle_add(self.step_eleven_row.set_sensitive, True)
+            GLib.idle_add(self._stop_status)
+
+    def _run_step_twelve(self) -> None:
+        try:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "record_prep"
+            summarization_dir = root_dir / "summarization"
+            summaries_path = summarization_dir / "summarized_hearings.txt"
+            reports_path = summarization_dir / "summarized_reports.txt"
+            if not summaries_path.exists() or not reports_path.exists():
+                raise FileNotFoundError("Run Step 10 to generate summarized files first.")
+            settings = load_embeddings_settings()
+            if not settings["voyage_api_key"] or not settings["voyage_model"]:
+                raise ValueError("Configure Voyage credentials in Settings.")
+            try:
+                from langchain_chroma import Chroma  # type: ignore
+                from langchain_core.documents import Document  # type: ignore
+                from langchain_voyageai import VoyageAIEmbeddings  # type: ignore
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    "Missing langchain/chroma/voyage dependencies. See uv add instructions."
+                ) from exc
+
+            embeddings_dir = root_dir / "embeddings"
+            vector_dir = embeddings_dir / "vector_database"
+            vector_dir.mkdir(parents=True, exist_ok=True)
+
+            embeddings = VoyageAIEmbeddings(
+                voyage_api_key=settings["voyage_api_key"],
+                model=settings["voyage_model"],
+            )
+            vectorstore = Chroma(
+                persist_directory=str(vector_dir),
+                embedding_function=embeddings,
+            )
+
+            hearing_text = hearings_path.read_text(encoding="utf-8", errors="ignore")
+            report_text = reports_path.read_text(encoding="utf-8", errors="ignore")
+            if not hearing_text.strip() and not report_text.strip():
+                raise ValueError("No optimized content available for embeddings.")
+
+            documents: list[Document] = []
+            for paragraph in _split_paragraphs(hearing_text):
+                documents.append(
+                    Document(
+                        page_content=paragraph,
+                        metadata={"source": "optimized_hearings.txt"},
+                    )
+                )
+            for paragraph in _split_paragraphs(report_text):
+                documents.append(
+                    Document(
+                        page_content=paragraph,
+                        metadata={"source": "optimized_reports.txt"},
+                    )
+                )
+            if not documents:
+                raise ValueError("No paragraphs found to embed.")
+            vectorstore.add_documents(documents)
+
+            legacy_embeddings_dir = root_dir / "Embeddings"
+            if legacy_embeddings_dir != embeddings_dir:
+                legacy_vector_dir = legacy_embeddings_dir / "vector_database"
+                legacy_vector_dir.mkdir(parents=True, exist_ok=True)
+                legacy_store = Chroma(
+                    persist_directory=str(legacy_vector_dir),
+                    embedding_function=embeddings,
+                )
+                legacy_store.add_documents(documents)
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Create embeddings failed: {exc}")
+        else:
+            GLib.idle_add(self.show_toast, "Create embeddings complete.")
+        finally:
+            GLib.idle_add(self.step_twelve_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
 
     def _append_boundary_entry(
