@@ -43,10 +43,18 @@ CONFIG_KEY_CASE_NAME_API_URL = "case_name_api_url"
 CONFIG_KEY_CASE_NAME_MODEL_ID = "case_name_model_id"
 CONFIG_KEY_CASE_NAME_API_KEY = "case_name_api_key"
 CONFIG_KEY_CASE_NAME_PROMPT = "case_name_prompt"
+CONFIG_KEY_CASE_NAME = "case_name"
+CONFIG_KEY_CASE_ROOT_DIR = "case_root_dir"
 CONFIG_KEY_CLASSIFY_FORMS_API_URL = "classify_form_names_api_url"
 CONFIG_KEY_CLASSIFY_FORMS_MODEL_ID = "classify_form_names_model_id"
 CONFIG_KEY_CLASSIFY_FORMS_API_KEY = "classify_form_names_api_key"
 CONFIG_KEY_CLASSIFY_FORMS_PROMPT = "classify_form_names_prompt"
+CONFIG_KEY_OPTIMIZE_API_URL = "optimize_api_url"
+CONFIG_KEY_OPTIMIZE_MODEL_ID = "optimize_model_id"
+CONFIG_KEY_OPTIMIZE_API_KEY = "optimize_api_key"
+CONFIG_KEY_OPTIMIZE_ATTORNEYS_PROMPT = "optimize_attorneys_prompt"
+CONFIG_KEY_OPTIMIZE_HEARINGS_PROMPT = "optimize_hearings_prompt"
+CONFIG_KEY_OPTIMIZE_REPORTS_PROMPT = "optimize_reports_prompt"
 CONFIG_KEY_SELECTED_PDFS = "selected_pdfs"
 DEFAULT_CLASSIFIER_PROMPT = (
     "You are labeling a single page of an OCR'd legal transcript. "
@@ -80,6 +88,32 @@ DEFAULT_CASE_NAME_PROMPT = (
     "The case name should replace spaces with underscores, like In_re_Mark_T or "
     "Social_Services_v_Breanna_F. "
     "If unknown, use an empty string."
+)
+DEFAULT_OPTIMIZE_ATTORNEYS_PROMPT = (
+    "You are reviewing an excerpt from an OCR'd hearing transcript. "
+    "Identify the attorneys who appear and who they represent. "
+    "Respond with 1-3 narrative sentences. "
+    "Do not use lists or markdown. "
+    "If representation is unclear, say so briefly."
+)
+DEFAULT_OPTIMIZE_HEARINGS_PROMPT = (
+    "You are reformatting a hearing transcript chunk for retrieval. "
+    "Use the exact words from the transcript. "
+    "Organize the output into paragraphs of about five sentences each. "
+    "Each paragraph must be on a single line and separated by a blank line. "
+    "Each paragraph must begin with 'Hearing date: <date>.' followed by a space, "
+    "then label each speaker before their dialogue using sentence case "
+    "(for example, 'Ms. Smith speaking: ...'). "
+    "The transcript may be all caps; convert dialogue to normal sentence case "
+    "while preserving words exactly and ensuring pronoun 'I' is capitalized. "
+    "Do not add commentary or change wording."
+)
+DEFAULT_OPTIMIZE_REPORTS_PROMPT = (
+    "Reproduce the meaningful portions of the report text verbatim. "
+    "Organize the output into paragraphs of about five sentences each. "
+    "Each paragraph must be on a single line and separated by a blank line. "
+    "Each paragraph must begin with 'Reporting:' followed by a space and the verbatim text. "
+    "Do not add commentary or change wording."
 )
 
 
@@ -324,6 +358,51 @@ def _strip_nonstandard_characters(text: str) -> str:
         elif unicodedata.category(ch) != "Cc":
             cleaned_chars.append(ch)
     return "".join(cleaned_chars)
+
+
+def _split_tagged_sections(text: str) -> list[tuple[str, str]]:
+    sections: list[tuple[str, str]] = []
+    current_label: str | None = None
+    current_lines: list[str] = []
+    for line in text.splitlines():
+        match = re.match(r"\s*<<<\s*(.*?)\s*>>>\s*$", line)
+        if match:
+            if current_label is not None:
+                sections.append((current_label, "\n".join(current_lines).strip()))
+            current_label = match.group(1).strip() or "Unknown"
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_label is not None:
+        sections.append((current_label, "\n".join(current_lines).strip()))
+    return sections
+
+
+def _split_into_sentences(text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+", normalized)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _chunk_sentences(sentences: list[str], max_chars: int) -> list[str]:
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        candidate = f"{current} {sentence}".strip() if current else sentence
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = sentence
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _collapse_blank_lines(text: str) -> str:
+    return re.sub(r"\n{3,}", "\n\n", text).rstrip() + "\n"
 
 
 def _infer_case_name_from_text(text: str) -> str:
@@ -583,6 +662,23 @@ def save_case_name_settings(api_url: str, model_id: str, api_key: str, prompt: s
     _write_config(config)
 
 
+def load_case_context() -> tuple[str, Path | None]:
+    config = _read_config()
+    case_name = str(config.get(CONFIG_KEY_CASE_NAME, "") or "").strip()
+    root_value = str(config.get(CONFIG_KEY_CASE_ROOT_DIR, "") or "").strip()
+    root_dir = Path(root_value) if root_value else None
+    if root_dir is not None and not root_dir.exists():
+        root_dir = None
+    return case_name, root_dir
+
+
+def save_case_context(case_name: str, root_dir: Path) -> None:
+    config = _read_config()
+    config[CONFIG_KEY_CASE_NAME] = case_name
+    config[CONFIG_KEY_CASE_ROOT_DIR] = str(root_dir)
+    _write_config(config)
+
+
 def load_selected_pdfs() -> list[Path]:
     config = _read_config()
     raw = config.get(CONFIG_KEY_SELECTED_PDFS)
@@ -621,6 +717,58 @@ class ClassifySettingsWidgets:
     model_row: Adw.EntryRow
     api_key_row: Adw.EntryRow
     prompt_buffer: Gtk.TextBuffer
+
+
+@dataclass
+class OptimizeSettingsWidgets:
+    api_url_row: Adw.EntryRow
+    model_row: Adw.EntryRow
+    api_key_row: Adw.EntryRow
+    attorneys_prompt_buffer: Gtk.TextBuffer
+    hearings_prompt_buffer: Gtk.TextBuffer
+    reports_prompt_buffer: Gtk.TextBuffer
+
+
+def load_optimize_settings() -> dict[str, str]:
+    config = _read_config()
+    api_url = str(config.get(CONFIG_KEY_OPTIMIZE_API_URL, "") or "").strip()
+    model_id = str(config.get(CONFIG_KEY_OPTIMIZE_MODEL_ID, "") or "").strip()
+    api_key = str(config.get(CONFIG_KEY_OPTIMIZE_API_KEY, "") or "").strip()
+    attorneys_prompt = str(
+        config.get(CONFIG_KEY_OPTIMIZE_ATTORNEYS_PROMPT, DEFAULT_OPTIMIZE_ATTORNEYS_PROMPT) or ""
+    ).strip()
+    hearings_prompt = str(
+        config.get(CONFIG_KEY_OPTIMIZE_HEARINGS_PROMPT, DEFAULT_OPTIMIZE_HEARINGS_PROMPT) or ""
+    ).strip()
+    reports_prompt = str(
+        config.get(CONFIG_KEY_OPTIMIZE_REPORTS_PROMPT, DEFAULT_OPTIMIZE_REPORTS_PROMPT) or ""
+    ).strip()
+    return {
+        "api_url": api_url,
+        "model_id": model_id,
+        "api_key": api_key,
+        "attorneys_prompt": attorneys_prompt or DEFAULT_OPTIMIZE_ATTORNEYS_PROMPT,
+        "hearings_prompt": hearings_prompt or DEFAULT_OPTIMIZE_HEARINGS_PROMPT,
+        "reports_prompt": reports_prompt or DEFAULT_OPTIMIZE_REPORTS_PROMPT,
+    }
+
+
+def save_optimize_settings(
+    api_url: str,
+    model_id: str,
+    api_key: str,
+    attorneys_prompt: str,
+    hearings_prompt: str,
+    reports_prompt: str,
+) -> None:
+    config = _read_config()
+    config[CONFIG_KEY_OPTIMIZE_API_URL] = api_url
+    config[CONFIG_KEY_OPTIMIZE_MODEL_ID] = model_id
+    config[CONFIG_KEY_OPTIMIZE_API_KEY] = api_key
+    config[CONFIG_KEY_OPTIMIZE_ATTORNEYS_PROMPT] = attorneys_prompt or DEFAULT_OPTIMIZE_ATTORNEYS_PROMPT
+    config[CONFIG_KEY_OPTIMIZE_HEARINGS_PROMPT] = hearings_prompt or DEFAULT_OPTIMIZE_HEARINGS_PROMPT
+    config[CONFIG_KEY_OPTIMIZE_REPORTS_PROMPT] = reports_prompt or DEFAULT_OPTIMIZE_REPORTS_PROMPT
+    _write_config(config)
 
 
 class SettingsWindow(Adw.ApplicationWindow):
@@ -728,6 +876,20 @@ class SettingsWindow(Adw.ApplicationWindow):
 
             page = self._build_prompt_page(key, title, settings, default_prompt)
             prompt_stack.add_named(page, key)
+
+        optimize_row = Gtk.ListBoxRow()
+        optimize_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        optimize_box.set_margin_top(8)
+        optimize_box.set_margin_bottom(8)
+        optimize_box.set_margin_start(12)
+        optimize_box.set_margin_end(12)
+        optimize_label = Gtk.Label(label="Optimize Summaries", xalign=0)
+        optimize_box.append(optimize_label)
+        optimize_row.set_child(optimize_box)
+        prompt_list.append(optimize_row)
+        self._prompt_row_keys[optimize_row] = "optimize"
+        optimize_page = self._build_optimize_prompt_page(load_optimize_settings())
+        prompt_stack.add_named(optimize_page, "optimize")
 
         if first_row is not None:
             prompt_list.select_row(first_row)
@@ -841,6 +1003,81 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         return page
 
+    def _build_optimize_prompt_page(self, settings: dict[str, str]) -> Gtk.Widget:
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page_box.set_margin_top(12)
+        page_box.set_margin_bottom(12)
+        page_box.set_margin_start(12)
+        page_box.set_margin_end(12)
+        page_box.set_vexpand(True)
+
+        title_label = Gtk.Label(label="Optimize Summaries", xalign=0)
+        title_label.add_css_class("title-3")
+        page_box.append(title_label)
+
+        credentials_group = Adw.PreferencesGroup(title="Credentials")
+        credentials_group.add_css_class("list-stack")
+        credentials_group.set_hexpand(True)
+        page_box.append(credentials_group)
+
+        api_url_row = Adw.EntryRow(title="API URL")
+        api_url_row.set_text(settings.get("api_url", ""))
+        credentials_group.add(api_url_row)
+
+        model_row = Adw.EntryRow(title="Model ID")
+        model_row.set_text(settings.get("model_id", ""))
+        credentials_group.add(model_row)
+
+        api_key_row = self._build_password_row("API Key")
+        api_key_row.set_text(settings.get("api_key", ""))
+        credentials_group.add(api_key_row)
+
+        prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        prompt_section.set_hexpand(True)
+        prompt_section.set_vexpand(True)
+
+        attorneys_label = Gtk.Label(label="Attorney Extraction Prompt", xalign=0)
+        attorneys_label.add_css_class("dim-label")
+        prompt_section.append(attorneys_label)
+        attorneys_scroller, attorneys_buffer = self._build_prompt_editor(
+            settings.get("attorneys_prompt") or DEFAULT_OPTIMIZE_ATTORNEYS_PROMPT
+        )
+        prompt_section.append(attorneys_scroller)
+
+        hearings_label = Gtk.Label(label="Optimize Hearings Prompt", xalign=0)
+        hearings_label.add_css_class("dim-label")
+        prompt_section.append(hearings_label)
+        hearings_scroller, hearings_buffer = self._build_prompt_editor(
+            settings.get("hearings_prompt") or DEFAULT_OPTIMIZE_HEARINGS_PROMPT
+        )
+        prompt_section.append(hearings_scroller)
+
+        reports_label = Gtk.Label(label="Optimize Reports Prompt", xalign=0)
+        reports_label.add_css_class("dim-label")
+        prompt_section.append(reports_label)
+        reports_scroller, reports_buffer = self._build_prompt_editor(
+            settings.get("reports_prompt") or DEFAULT_OPTIMIZE_REPORTS_PROMPT
+        )
+        prompt_section.append(reports_scroller)
+
+        page_box.append(prompt_section)
+
+        page = Gtk.ScrolledWindow()
+        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page.set_hexpand(True)
+        page.set_vexpand(True)
+        page.set_child(page_box)
+
+        self._optimize_widgets = OptimizeSettingsWidgets(
+            api_url_row=api_url_row,
+            model_row=model_row,
+            api_key_row=api_key_row,
+            attorneys_prompt_buffer=attorneys_buffer,
+            hearings_prompt_buffer=hearings_buffer,
+            reports_prompt_buffer=reports_buffer,
+        )
+        return page
+
     def _prompt_text(self, buffer: Gtk.TextBuffer) -> str:
         start, end = buffer.get_bounds()
         return buffer.get_text(start, end, True)
@@ -858,6 +1095,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         dates_widgets = self._prompt_editors.get("dates")
         report_widgets = self._prompt_editors.get("report-names")
         form_widgets = self._prompt_editors.get("form-names")
+        optimize_widgets = getattr(self, "_optimize_widgets", None)
         if case_widgets:
             save_case_name_settings(
                 case_widgets.api_url_row.get_text().strip(),
@@ -892,6 +1130,15 @@ class SettingsWindow(Adw.ApplicationWindow):
                 form_widgets.model_row.get_text().strip(),
                 form_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(form_widgets.prompt_buffer).strip(),
+            )
+        if optimize_widgets:
+            save_optimize_settings(
+                optimize_widgets.api_url_row.get_text().strip(),
+                optimize_widgets.model_row.get_text().strip(),
+                optimize_widgets.api_key_row.get_text().strip(),
+                self._prompt_text(optimize_widgets.attorneys_prompt_buffer).strip(),
+                self._prompt_text(optimize_widgets.hearings_prompt_buffer).strip(),
+                self._prompt_text(optimize_widgets.reports_prompt_buffer).strip(),
             )
         if self._on_saved:
             self._on_saved()
@@ -986,8 +1233,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_eight_row.connect("activated", self.on_step_eight_clicked)
         listbox.append(self.step_eight_row)
 
+        self.step_nine_row = Adw.ActionRow(title="Create optimized hearing/report files")
+        self.step_nine_row.set_activatable(True)
+        self.step_nine_row.connect("activated", self.on_step_nine_clicked)
+        listbox.append(self.step_nine_row)
+
         self._setup_menu(app)
         self._load_selected_pdfs()
+        self._load_case_context()
 
     def _setup_menu(self, app: Adw.Application) -> None:
         menu = Gio.Menu()
@@ -1074,6 +1327,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else f"{len(self.selected_pdfs)} PDFs selected"
         )
         self.selected_label.set_text(f"Selected: {label}")
+
+    def _load_case_context(self) -> None:
+        case_name, _root_dir = load_case_context()
+        if case_name:
+            self.selected_label.set_text(f"Selected: {case_name}")
 
     def on_step_one_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
@@ -1168,6 +1426,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not case_name:
                 raise ValueError("Unable to infer case name from first three pages.")
             (root_dir / "case_name.txt").write_text(case_name, encoding="utf-8")
+            save_case_context(case_name, base_dir)
             GLib.idle_add(self.selected_label.set_text, f"Selected: {case_name}")
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Infer case name failed: {exc}")
@@ -1224,6 +1483,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self.step_eight_row.set_sensitive(False)
         threading.Thread(target=self._run_step_eight, daemon=True).start()
+
+    def on_step_nine_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self.step_nine_row.set_sensitive(False)
+        threading.Thread(target=self._run_step_nine, daemon=True).start()
 
     def _run_step_two(self) -> None:
         try:
@@ -1618,6 +1884,98 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Step 8 complete.")
         finally:
             GLib.idle_add(self.step_eight_row.set_sensitive, True)
+
+    def _run_step_nine(self) -> None:
+        try:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "record_prep"
+            summarization_dir = root_dir / "summarization"
+            raw_hearings_path = summarization_dir / "raw_hearings.txt"
+            raw_reports_path = summarization_dir / "raw_reports.txt"
+            if not raw_hearings_path.exists() or not raw_reports_path.exists():
+                raise FileNotFoundError("Run Step 8 to generate raw hearing/report files first.")
+            settings = load_optimize_settings()
+            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
+                raise ValueError("Configure optimize API URL, model ID, and API key in Settings.")
+            attorneys_prompt = settings["attorneys_prompt"]
+            hearings_prompt = settings["hearings_prompt"]
+            reports_prompt = settings["reports_prompt"]
+
+            hearing_sections = _split_tagged_sections(raw_hearings_path.read_text(encoding="utf-8"))
+            report_sections = _split_tagged_sections(raw_reports_path.read_text(encoding="utf-8"))
+            if not hearing_sections and not report_sections:
+                raise FileNotFoundError("No hearing/report sections found in raw files.")
+
+            optimized_hearings: list[str] = []
+            for label, content in hearing_sections:
+                if not content:
+                    continue
+                sentences = _split_into_sentences(content)
+                if not sentences:
+                    continue
+                attorney_excerpt = _chunk_sentences(sentences, 2000)[0]
+                attorney_info = self._request_plain_text(
+                    {
+                        "api_url": settings["api_url"],
+                        "model_id": settings["model_id"],
+                        "api_key": settings["api_key"],
+                        "prompt": attorneys_prompt,
+                    },
+                    attorney_excerpt,
+                )
+                chunks = _chunk_sentences(sentences, 3500)
+                for chunk in chunks:
+                    payload = f"Hearing date: {label}\nAttorney info: {attorney_info}\nTranscript:\n{chunk}"
+                    response = self._request_plain_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": hearings_prompt,
+                        },
+                        payload,
+                    )
+                    if response:
+                        optimized_hearings.append(response.strip())
+
+            optimized_reports: list[str] = []
+            for _label, content in report_sections:
+                if not content:
+                    continue
+                sentences = _split_into_sentences(content)
+                if not sentences:
+                    continue
+                chunks = _chunk_sentences(sentences, 3500)
+                for chunk in chunks:
+                    response = self._request_plain_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": reports_prompt,
+                        },
+                        chunk,
+                    )
+                    if response:
+                        optimized_reports.append(response.strip())
+
+            (summarization_dir / "optimized_hearings.txt").write_text(
+                _collapse_blank_lines("\n\n".join(optimized_hearings)),
+                encoding="utf-8",
+            )
+            (summarization_dir / "optimized_reports.txt").write_text(
+                _collapse_blank_lines("\n\n".join(optimized_reports)),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Step 9 failed: {exc}")
+        else:
+            GLib.idle_add(self.show_toast, "Step 9 complete.")
+        finally:
+            GLib.idle_add(self.step_nine_row.set_sensitive, True)
 
     def _append_boundary_entry(
         self,
