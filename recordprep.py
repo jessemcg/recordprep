@@ -1419,62 +1419,98 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.add_css_class("boxed-list")
         content.append(listbox)
 
-        self.step_one_row = Adw.ActionRow(title="Create text/image files")
+        self.step_one_row = Adw.ActionRow(
+            title="Create files",
+            subtitle="Generate per-page text and image files for the selected PDFs.",
+        )
         self.step_one_row.set_activatable(True)
         self.step_one_row.connect("activated", self.on_step_one_clicked)
         listbox.append(self.step_one_row)
 
-        self.step_strip_nonstandard_row = Adw.ActionRow(title="Strip non-printing characters")
+        self.step_strip_nonstandard_row = Adw.ActionRow(
+            title="Strip characters",
+            subtitle="Remove non-printing characters from the extracted text files.",
+        )
         self.step_strip_nonstandard_row.set_activatable(True)
         self.step_strip_nonstandard_row.connect("activated", self.on_step_strip_nonstandard_clicked)
         listbox.append(self.step_strip_nonstandard_row)
 
-        self.step_infer_case_row = Adw.ActionRow(title="Infer case name")
+        self.step_infer_case_row = Adw.ActionRow(
+            title="Infer case",
+            subtitle="Use the first pages to infer the case name and save it.",
+        )
         self.step_infer_case_row.set_activatable(True)
         self.step_infer_case_row.connect("activated", self.on_step_infer_case_clicked)
         listbox.append(self.step_infer_case_row)
 
-        self.step_two_row = Adw.ActionRow(title="Create classify basic file")
+        self.step_two_row = Adw.ActionRow(
+            title="Classify pages",
+            subtitle="Label each page by type, date, and form metadata.",
+        )
         self.step_two_row.set_activatable(True)
         self.step_two_row.connect("activated", self.on_step_two_clicked)
         listbox.append(self.step_two_row)
 
-        self.step_three_row = Adw.ActionRow(title="Create classify dates file")
+        self.step_three_row = Adw.ActionRow(
+            title="Classify dates",
+            subtitle="Identify hearing and minute-order dates from the transcript.",
+        )
         self.step_three_row.set_activatable(True)
         self.step_three_row.connect("activated", self.on_step_three_clicked)
         listbox.append(self.step_three_row)
 
-        self.step_four_row = Adw.ActionRow(title="Create classify report names file")
+        self.step_four_row = Adw.ActionRow(
+            title="Classify reports",
+            subtitle="Extract report titles from report sections.",
+        )
         self.step_four_row.set_activatable(True)
         self.step_four_row.connect("activated", self.on_step_four_clicked)
         listbox.append(self.step_four_row)
 
-        self.step_five_row = Adw.ActionRow(title="Create classify form names file")
+        self.step_five_row = Adw.ActionRow(
+            title="Classify forms",
+            subtitle="Extract form names from form pages.",
+        )
         self.step_five_row.set_activatable(True)
         self.step_five_row.connect("activated", self.on_step_five_clicked)
         listbox.append(self.step_five_row)
 
-        self.step_six_row = Adw.ActionRow(title="Derive TOC file")
+        self.step_six_row = Adw.ActionRow(
+            title="Build TOC",
+            subtitle="Compile a table of contents for forms, reports, orders, and hearings.",
+        )
         self.step_six_row.set_activatable(True)
         self.step_six_row.connect("activated", self.on_step_six_clicked)
         listbox.append(self.step_six_row)
 
-        self.step_seven_row = Adw.ActionRow(title="Derive hearing/report boundaries")
+        self.step_seven_row = Adw.ActionRow(
+            title="Find boundaries",
+            subtitle="Determine page ranges for hearing and report sections.",
+        )
         self.step_seven_row.set_activatable(True)
         self.step_seven_row.connect("activated", self.on_step_seven_clicked)
         listbox.append(self.step_seven_row)
 
-        self.step_eight_row = Adw.ActionRow(title="Create raw hearing/report files")
+        self.step_eight_row = Adw.ActionRow(
+            title="Create raw",
+            subtitle="Create raw hearing and report text files for summarization.",
+        )
         self.step_eight_row.set_activatable(True)
         self.step_eight_row.connect("activated", self.on_step_eight_clicked)
         listbox.append(self.step_eight_row)
 
-        self.step_nine_row = Adw.ActionRow(title="Create optimized hearing/report files")
+        self.step_nine_row = Adw.ActionRow(
+            title="Create optimized",
+            subtitle="Prepare optimized hearing and report text for retrieval.",
+        )
         self.step_nine_row.set_activatable(True)
         self.step_nine_row.connect("activated", self.on_step_nine_clicked)
         listbox.append(self.step_nine_row)
 
-        self.step_ten_row = Adw.ActionRow(title="Create summarized hearing/report files")
+        self.step_ten_row = Adw.ActionRow(
+            title="Create summaries",
+            subtitle="Summarize optimized hearings and reports into concise paragraphs.",
+        )
         self.step_ten_row.set_activatable(True)
         self.step_ten_row.connect("activated", self.on_step_ten_clicked)
         listbox.append(self.step_ten_row)
