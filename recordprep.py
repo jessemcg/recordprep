@@ -63,6 +63,7 @@ CONFIG_KEY_SUMMARIZE_MODEL_ID = "summarize_model_id"
 CONFIG_KEY_SUMMARIZE_API_KEY = "summarize_api_key"
 CONFIG_KEY_SUMMARIZE_HEARINGS_PROMPT = "summarize_hearings_prompt"
 CONFIG_KEY_SUMMARIZE_REPORTS_PROMPT = "summarize_reports_prompt"
+CONFIG_KEY_SUMMARIZE_MINUTES_PROMPT = "summarize_minutes_prompt"
 CONFIG_KEY_SUMMARIZE_CHUNK_SIZE = "summarize_chunk_size"
 CONFIG_KEY_OVERVIEW_API_URL = "overview_api_url"
 CONFIG_KEY_OVERVIEW_MODEL_ID = "overview_model_id"
@@ -144,6 +145,22 @@ DEFAULT_SUMMARIZE_REPORTS_PROMPT = (
     "highlight legally significant statements. Each quote must be in quotation marks "
     "and must be verbatim. Do not use ellipses. Do not add commentary or markdown. "
     "Do not begin with prefatory language. Here are the reports:"
+)
+DEFAULT_SUMMARIZE_MINUTES_PROMPT = (
+    "I will provide you with the pages of a minute order. Based on this information, "
+    "state the name of the hearing, whether the hearing was reported, whether one or "
+    "both parents were present, and what the juvenile court ordered. The description "
+    "of what the juvenile court ordered must be brief and concise. Only state that a "
+    "parent is present if the minute order indicates that the parent is present on the "
+    "first page of the minute order. If only a parent's attorney is listed, assume that "
+    "the parent is not present. Do not insert any line breaks. Here are three examples "
+    "of the proper format:\n\nDetention Hearing. Reported. No parent appeared. The "
+    "juvenile court ordered the children temporarily removed from the parents.\n\n"
+    "Receipt of Report Hearing. Not Reported. No parent appeared. The juvenile court "
+    "received the section 361.66 report into evidence.\n\nPermanent Plan Review "
+    "Hearing. Reported. Only mother appeared. The juvenile court received the social "
+    "worker reports into evidence and heard testimony from mother. The juvenile court "
+    "terminated parental rights.\n\nOkay, here is the minute order:"
 )
 DEFAULT_SUMMARIZE_CHUNK_SIZE = 15
 DEFAULT_OVERVIEW_PROMPT = (
@@ -410,13 +427,24 @@ def _summary_output_paths(root_dir: Path) -> tuple[Path, Path]:
         case_name = _sanitize_case_name_value(case_name)
     if case_name:
         return (
-            summaries_dir / f"sum_hearings_{case_name}.txt",
-            summaries_dir / f"sum_reports_{case_name}.txt",
+            summaries_dir / f"hearings_sum_{case_name}.txt",
+            summaries_dir / f"reports_sum_{case_name}.txt",
         )
     return (
         summaries_dir / "summarized_hearings.txt",
         summaries_dir / "summarized_reports.txt",
     )
+
+
+def _minutes_summary_output_path(root_dir: Path) -> Path:
+    summaries_dir = root_dir / "summaries"
+    case_name = _load_case_name_from_file(root_dir)
+    if not case_name:
+        case_name, _ = load_case_context()
+        case_name = _sanitize_case_name_value(case_name)
+    if case_name:
+        return summaries_dir / f"minutes_sum_{case_name}.txt"
+    return summaries_dir / "summarized_minutes.txt"
 
 
 def _strip_nonstandard_characters(text: str) -> str:
@@ -666,6 +694,7 @@ def _write_manifest(root_dir: Path, selected_pdfs: list[Path]) -> None:
     rag_dir = root_dir / "rag"
     temp_dir = root_dir / "temp"
     summarized_hearings_path, summarized_reports_path = _summary_output_paths(root_dir)
+    summarized_minutes_path = _minutes_summary_output_path(root_dir)
 
     def _root_path(value: Path) -> str:
         return str(value)
@@ -698,12 +727,14 @@ def _write_manifest(root_dir: Path, selected_pdfs: list[Path]) -> None:
             "toc": _relpath(artifacts_dir / "toc.txt"),
             "hearing_boundaries": _relpath(artifacts_dir / "hearing_boundaries.json"),
             "report_boundaries": _relpath(artifacts_dir / "report_boundaries.json"),
+            "minutes_boundaries": _relpath(artifacts_dir / "minutes_boundaries.json"),
             "raw_hearings": _relpath(artifacts_dir / "raw_hearings.txt"),
             "raw_reports": _relpath(artifacts_dir / "raw_reports.txt"),
             "optimized_hearings": _relpath(artifacts_dir / "optimized_hearings.txt"),
             "optimized_reports": _relpath(artifacts_dir / "optimized_reports.txt"),
             "summarized_hearings": _relpath(summarized_hearings_path),
             "summarized_reports": _relpath(summarized_reports_path),
+            "summarized_minutes": _relpath(summarized_minutes_path),
             "case_overview": _relpath(rag_dir / "case_overview.txt"),
         },
         "classification": {
@@ -944,6 +975,7 @@ class SummarizeSettingsWidgets:
     chunk_size_row: Adw.EntryRow
     hearings_prompt_buffer: Gtk.TextBuffer
     reports_prompt_buffer: Gtk.TextBuffer
+    minutes_prompt_buffer: Gtk.TextBuffer
 
 
 @dataclass
@@ -1020,6 +1052,9 @@ def load_summarize_settings() -> dict[str, str]:
     reports_prompt = str(
         config.get(CONFIG_KEY_SUMMARIZE_REPORTS_PROMPT, DEFAULT_SUMMARIZE_REPORTS_PROMPT) or ""
     ).strip()
+    minutes_prompt = str(
+        config.get(CONFIG_KEY_SUMMARIZE_MINUTES_PROMPT, DEFAULT_SUMMARIZE_MINUTES_PROMPT) or ""
+    ).strip()
     return {
         "api_url": api_url,
         "model_id": model_id,
@@ -1027,6 +1062,7 @@ def load_summarize_settings() -> dict[str, str]:
         "chunk_size": str(chunk_size),
         "hearings_prompt": hearings_prompt or DEFAULT_SUMMARIZE_HEARINGS_PROMPT,
         "reports_prompt": reports_prompt or DEFAULT_SUMMARIZE_REPORTS_PROMPT,
+        "minutes_prompt": minutes_prompt or DEFAULT_SUMMARIZE_MINUTES_PROMPT,
     }
 
 
@@ -1037,6 +1073,7 @@ def save_summarize_settings(
     chunk_size: str,
     hearings_prompt: str,
     reports_prompt: str,
+    minutes_prompt: str,
 ) -> None:
     config = _read_config()
     config[CONFIG_KEY_SUMMARIZE_API_URL] = api_url
@@ -1048,6 +1085,9 @@ def save_summarize_settings(
     )
     config[CONFIG_KEY_SUMMARIZE_REPORTS_PROMPT] = (
         reports_prompt or DEFAULT_SUMMARIZE_REPORTS_PROMPT
+    )
+    config[CONFIG_KEY_SUMMARIZE_MINUTES_PROMPT] = (
+        minutes_prompt or DEFAULT_SUMMARIZE_MINUTES_PROMPT
     )
     _write_config(config)
 
@@ -1214,7 +1254,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         optimize_box.set_margin_bottom(8)
         optimize_box.set_margin_start(12)
         optimize_box.set_margin_end(12)
-        optimize_label = Gtk.Label(label="Optimize Summaries", xalign=0)
+        optimize_label = Gtk.Label(label="Optimize", xalign=0)
         optimize_box.append(optimize_label)
         optimize_row.set_child(optimize_box)
         prompt_list.append(optimize_row)
@@ -1384,7 +1424,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         page_box.set_margin_end(12)
         page_box.set_vexpand(True)
 
-        title_label = Gtk.Label(label="Optimize Summaries", xalign=0)
+        title_label = Gtk.Label(label="Optimize", xalign=0)
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
@@ -1504,6 +1544,14 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         prompt_section.append(reports_scroller)
 
+        minutes_label = Gtk.Label(label="Summarize Minute Orders Prompt", xalign=0)
+        minutes_label.add_css_class("dim-label")
+        prompt_section.append(minutes_label)
+        minutes_scroller, minutes_buffer = self._build_prompt_editor(
+            settings.get("minutes_prompt") or DEFAULT_SUMMARIZE_MINUTES_PROMPT
+        )
+        prompt_section.append(minutes_scroller)
+
         page_box.append(prompt_section)
 
         page = Gtk.ScrolledWindow()
@@ -1519,6 +1567,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             chunk_size_row=chunk_size_row,
             hearings_prompt_buffer=hearings_buffer,
             reports_prompt_buffer=reports_buffer,
+            minutes_prompt_buffer=minutes_buffer,
         )
         return page
 
@@ -1687,6 +1736,7 @@ class SettingsWindow(Adw.ApplicationWindow):
                 summarize_widgets.chunk_size_row.get_text().strip(),
                 self._prompt_text(summarize_widgets.hearings_prompt_buffer).strip(),
                 self._prompt_text(summarize_widgets.reports_prompt_buffer).strip(),
+                self._prompt_text(summarize_widgets.minutes_prompt_buffer).strip(),
             )
         if overview_widgets:
             save_overview_settings(
@@ -1824,7 +1874,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.step_seven_row = Adw.ActionRow(
             title="Find boundaries",
-            subtitle="Determine page ranges for hearing and report sections.",
+            subtitle="Determine page ranges for hearing, report, and minute order sections.",
         )
         self.step_seven_row.set_activatable(True)
         self.step_seven_row.connect("activated", self.on_step_seven_clicked)
@@ -1848,7 +1898,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.step_ten_row = Adw.ActionRow(
             title="Create summaries",
-            subtitle="Summarize optimized hearings and reports into concise paragraphs.",
+            subtitle="Summarize hearings, reports, and minute orders into concise paragraphs.",
         )
         self.step_ten_row.set_activatable(True)
         self.step_ten_row.connect("activated", self.on_step_ten_clicked)
@@ -2566,6 +2616,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     report_name_by_file[file_name] = report_name
             hearing_boundaries: list[dict[str, str]] = []
             report_boundaries: list[dict[str, str]] = []
+            minutes_boundaries: list[dict[str, str]] = []
             entries = _load_classify_basic_entries(classify_basic_path)
             if not entries:
                 raise FileNotFoundError("No entries found in basic.jsonl.")
@@ -2573,7 +2624,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             current_start_file: str | None = None
             current_end_file: str | None = None
             for file_name, page_type, page_number in entries:
-                is_sequence_type = page_type in {"hearing", "report"}
+                is_sequence_type = page_type in {"hearing", "report", "minute_order"}
                 if not is_sequence_type:
                     if current_type:
                         self._append_boundary_entry(
@@ -2584,6 +2635,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                             report_name_by_file,
                             hearing_boundaries,
                             report_boundaries,
+                            minutes_boundaries,
                         )
                         current_type = None
                         current_start_file = None
@@ -2603,6 +2655,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                             report_name_by_file,
                             hearing_boundaries,
                             report_boundaries,
+                            minutes_boundaries,
                         )
                     current_type = page_type
                     current_start_file = file_name
@@ -2618,6 +2671,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     report_name_by_file,
                     hearing_boundaries,
                     report_boundaries,
+                    minutes_boundaries,
                 )
             hearing_path = derived_dir / "hearing_boundaries.json"
             hearing_path.write_text(
@@ -2627,6 +2681,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             report_path = derived_dir / "report_boundaries.json"
             report_path.write_text(
                 json.dumps(report_boundaries, indent=2),
+                encoding="utf-8",
+            )
+            minutes_path = derived_dir / "minutes_boundaries.json"
+            minutes_path.write_text(
+                json.dumps(minutes_boundaries, indent=2),
                 encoding="utf-8",
             )
         except Exception as exc:
@@ -2789,10 +2848,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             artifacts_dir = root_dir / "artifacts"
             summaries_dir = root_dir / "summaries"
             summaries_path, reports_path = _summary_output_paths(root_dir)
+            minutes_path = _minutes_summary_output_path(root_dir)
+            text_dir = root_dir / "text_pages"
             optimized_hearings_path = artifacts_dir / "optimized_hearings.txt"
             optimized_reports_path = artifacts_dir / "optimized_reports.txt"
             if not optimized_hearings_path.exists() or not optimized_reports_path.exists():
                 raise FileNotFoundError("Run Create optimized to generate optimized files first.")
+            if not text_dir.exists():
+                raise FileNotFoundError("Run Create files to generate text files first.")
+            minutes_boundaries_path = artifacts_dir / "minutes_boundaries.json"
+            if not minutes_boundaries_path.exists():
+                raise FileNotFoundError("Run Find boundaries to generate minute order boundaries first.")
             settings = load_summarize_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure summarize API URL, model ID, and API key in Settings.")
@@ -2805,13 +2871,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     chunk_size = DEFAULT_SUMMARIZE_CHUNK_SIZE
 
             case_name, _root_dir = load_case_context()
+            display_case_name = case_name.replace("_", " ") if case_name else ""
             summary_hearings: list[str] = []
             summary_reports: list[str] = []
 
-            if case_name:
-                summary_hearings.extend(["RT Summary", case_name, ""])
+            if display_case_name:
+                summary_hearings.extend(["Hearings Summary", display_case_name, ""])
             else:
-                summary_hearings.append("RT Summary")
+                summary_hearings.append("Hearings Summary")
 
             hearing_paragraphs = _split_paragraphs(
                 optimized_hearings_path.read_text(encoding="utf-8")
@@ -2853,10 +2920,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         summary_hearings.append(_remove_standalone_date_lines(cleaned_response))
                         summary_hearings.append("")
 
-            if case_name:
-                summary_reports.extend(["CT Summary", case_name, "", ""])
+            if display_case_name:
+                summary_reports.extend(["Reports Summary", display_case_name, "", ""])
             else:
-                summary_reports.extend(["CT Summary", ""])
+                summary_reports.extend(["Reports Summary", ""])
 
             report_paragraphs = _split_paragraphs(
                 optimized_reports_path.read_text(encoding="utf-8")
@@ -2878,6 +2945,50 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     summary_reports.append(response.strip())
                     summary_reports.append("")
 
+            minutes_outline: list[str] = []
+            if display_case_name:
+                minutes_outline.extend(["Minutes Outline", display_case_name, ""])
+            else:
+                minutes_outline.append("Minutes Outline")
+
+            minute_entries = _load_json_entries(minutes_boundaries_path)
+            for entry in minute_entries:
+                date_value = _extract_entry_value(entry, "date").strip()
+                start_label = _extract_entry_value(entry, "start_page", "start", "starte_page").strip()
+                end_label = _extract_entry_value(entry, "end_page", "end", "endpage").strip()
+                start_page = _page_number_from_label(start_label)
+                end_page = _page_number_from_label(end_label)
+                if start_page is None or end_page is None:
+                    raise ValueError("Minute order boundary entry missing start/end page.")
+                if end_page < start_page:
+                    raise ValueError("Minute order boundary entry has end page before start page.")
+                minutes_outline.append(date_value or "Minute Order")
+                minutes_outline.append("")
+                page_texts: list[str] = []
+                for page in range(start_page, end_page + 1):
+                    page_path = text_dir / f"{page:04d}.txt"
+                    if not page_path.exists():
+                        raise FileNotFoundError(f"Missing text file {page_path.name}.")
+                    page_texts.append(page_path.read_text(encoding="utf-8", errors="ignore"))
+                minutes_payload = "\n".join(page_texts).strip()
+                if minutes_payload:
+                    response = self._request_plain_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": settings["minutes_prompt"],
+                        },
+                        minutes_payload,
+                    )
+                    if response:
+                        minutes_outline.append(" ".join(response.split()))
+                    else:
+                        minutes_outline.append("")
+                else:
+                    minutes_outline.append("")
+                minutes_outline.append("")
+
             summaries_dir.mkdir(parents=True, exist_ok=True)
             summaries_path.write_text(
                 _collapse_blank_lines("\n".join(summary_hearings)),
@@ -2885,6 +2996,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             )
             reports_path.write_text(
                 _collapse_blank_lines("\n".join(summary_reports)),
+                encoding="utf-8",
+            )
+            minutes_path.write_text(
+                _collapse_blank_lines("\n".join(minutes_outline)),
                 encoding="utf-8",
             )
         except Exception as exc:
@@ -3037,6 +3152,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         report_name_by_file: dict[str, str],
         hearing_boundaries: list[dict[str, str]],
         report_boundaries: list[dict[str, str]],
+        minutes_boundaries: list[dict[str, str]],
     ) -> None:
         if not page_type or not start_file or not end_file:
             return
@@ -3055,6 +3171,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             report_boundaries.append(
                 {
                     "report_name": report_name_by_file.get(start_file, ""),
+                    "start_page": start_page,
+                    "end_page": end_page,
+                }
+            )
+            return
+        if page_type == "minute_order":
+            minutes_boundaries.append(
+                {
+                    "date": date_by_file.get(start_file, ""),
                     "start_page": start_page,
                     "end_page": end_page,
                 }
