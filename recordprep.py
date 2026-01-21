@@ -1712,6 +1712,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.selected_pdfs: list[Path] = []
         self._settings_window: SettingsWindow | None = None
+        self._pipeline_running = False
 
         header_bar = Adw.HeaderBar()
 
@@ -1748,9 +1749,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.selected_label.add_css_class("dim-label")
         content.append(self.selected_label)
 
-        listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-        listbox.add_css_class("boxed-list")
-        content.append(listbox)
+        self.run_all_button = Gtk.Button(label="Run all steps")
+        self.run_all_button.add_css_class("suggested-action")
+        self.run_all_button.set_halign(Gtk.Align.START)
+        self.run_all_button.connect("clicked", self.on_run_all_clicked)
+        content.append(self.run_all_button)
+
+        self.step_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.step_list.add_css_class("boxed-list")
+        content.append(self.step_list)
 
         self.step_one_row = Adw.ActionRow(
             title="Create files",
@@ -1758,7 +1765,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_one_row.set_activatable(True)
         self.step_one_row.connect("activated", self.on_step_one_clicked)
-        listbox.append(self.step_one_row)
+        self.step_list.append(self.step_one_row)
 
         self.step_strip_nonstandard_row = Adw.ActionRow(
             title="Strip characters",
@@ -1766,7 +1773,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_strip_nonstandard_row.set_activatable(True)
         self.step_strip_nonstandard_row.connect("activated", self.on_step_strip_nonstandard_clicked)
-        listbox.append(self.step_strip_nonstandard_row)
+        self.step_list.append(self.step_strip_nonstandard_row)
 
         self.step_infer_case_row = Adw.ActionRow(
             title="Infer case",
@@ -1774,7 +1781,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_infer_case_row.set_activatable(True)
         self.step_infer_case_row.connect("activated", self.on_step_infer_case_clicked)
-        listbox.append(self.step_infer_case_row)
+        self.step_list.append(self.step_infer_case_row)
 
         self.step_two_row = Adw.ActionRow(
             title="Classify pages",
@@ -1782,7 +1789,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_two_row.set_activatable(True)
         self.step_two_row.connect("activated", self.on_step_two_clicked)
-        listbox.append(self.step_two_row)
+        self.step_list.append(self.step_two_row)
 
         self.step_three_row = Adw.ActionRow(
             title="Classify dates",
@@ -1790,7 +1797,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_three_row.set_activatable(True)
         self.step_three_row.connect("activated", self.on_step_three_clicked)
-        listbox.append(self.step_three_row)
+        self.step_list.append(self.step_three_row)
 
         self.step_four_row = Adw.ActionRow(
             title="Classify reports",
@@ -1798,7 +1805,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_four_row.set_activatable(True)
         self.step_four_row.connect("activated", self.on_step_four_clicked)
-        listbox.append(self.step_four_row)
+        self.step_list.append(self.step_four_row)
 
         self.step_five_row = Adw.ActionRow(
             title="Classify forms",
@@ -1806,7 +1813,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_five_row.set_activatable(True)
         self.step_five_row.connect("activated", self.on_step_five_clicked)
-        listbox.append(self.step_five_row)
+        self.step_list.append(self.step_five_row)
 
         self.step_six_row = Adw.ActionRow(
             title="Build TOC",
@@ -1814,7 +1821,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_six_row.set_activatable(True)
         self.step_six_row.connect("activated", self.on_step_six_clicked)
-        listbox.append(self.step_six_row)
+        self.step_list.append(self.step_six_row)
 
         self.step_seven_row = Adw.ActionRow(
             title="Find boundaries",
@@ -1822,7 +1829,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_seven_row.set_activatable(True)
         self.step_seven_row.connect("activated", self.on_step_seven_clicked)
-        listbox.append(self.step_seven_row)
+        self.step_list.append(self.step_seven_row)
 
         self.step_eight_row = Adw.ActionRow(
             title="Create raw",
@@ -1830,7 +1837,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_eight_row.set_activatable(True)
         self.step_eight_row.connect("activated", self.on_step_eight_clicked)
-        listbox.append(self.step_eight_row)
+        self.step_list.append(self.step_eight_row)
 
         self.step_nine_row = Adw.ActionRow(
             title="Create optimized",
@@ -1838,7 +1845,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_nine_row.set_activatable(True)
         self.step_nine_row.connect("activated", self.on_step_nine_clicked)
-        listbox.append(self.step_nine_row)
+        self.step_list.append(self.step_nine_row)
 
         self.step_ten_row = Adw.ActionRow(
             title="Create summaries",
@@ -1846,7 +1853,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_ten_row.set_activatable(True)
         self.step_ten_row.connect("activated", self.on_step_ten_clicked)
-        listbox.append(self.step_ten_row)
+        self.step_list.append(self.step_ten_row)
 
         self.step_eleven_row = Adw.ActionRow(
             title="Case overview",
@@ -1854,7 +1861,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_eleven_row.set_activatable(True)
         self.step_eleven_row.connect("activated", self.on_step_eleven_clicked)
-        listbox.append(self.step_eleven_row)
+        self.step_list.append(self.step_eleven_row)
 
         self.step_twelve_row = Adw.ActionRow(
             title="Create RAG index",
@@ -1862,7 +1869,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_twelve_row.set_activatable(True)
         self.step_twelve_row.connect("activated", self.on_step_twelve_clicked)
-        listbox.append(self.step_twelve_row)
+        self.step_list.append(self.step_twelve_row)
 
         self._setup_menu(app)
         self._load_selected_pdfs()
@@ -1922,6 +1929,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     def _stop_status(self) -> None:
         self._set_status(APPLICATION_NAME, False)
 
+    def _stop_status_if_idle(self) -> None:
+        if not self._pipeline_running:
+            self._stop_status()
+
     def _safe_update_manifest(self, root_dir: Path) -> None:
         try:
             _write_manifest(root_dir, self.selected_pdfs)
@@ -1980,6 +1991,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if case_name:
             self.selected_label.set_text(f"Selected: {case_name}")
 
+    def on_run_all_clicked(self, _button: Gtk.Button) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        if self._pipeline_running:
+            self.show_toast("Pipeline already running.")
+            return
+        self._pipeline_running = True
+        self.run_all_button.set_sensitive(False)
+        self.step_list.set_sensitive(False)
+        threading.Thread(target=self._run_all_steps, daemon=True).start()
+
     def on_step_one_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
@@ -2004,7 +2027,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._start_step(self.step_infer_case_row)
         threading.Thread(target=self._run_step_infer_case, daemon=True).start()
 
-    def _run_step_one(self) -> None:
+    def _run_step_one(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2023,13 +2047,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Create files failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Create files complete.")
         finally:
             GLib.idle_add(self.step_one_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_strip_nonstandard(self) -> None:
+    def _run_step_strip_nonstandard(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2050,13 +2077,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Strip non-standard characters failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Strip non-standard characters complete.")
         finally:
             GLib.idle_add(self.step_strip_nonstandard_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_infer_case(self) -> None:
+    def _run_step_infer_case(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2087,11 +2117,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Infer case name failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Infer case name complete.")
         finally:
             GLib.idle_add(self.step_infer_case_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
     def on_step_two_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
@@ -2181,7 +2213,48 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._start_step(self.step_twelve_row)
         threading.Thread(target=self._run_step_twelve, daemon=True).start()
 
-    def _run_step_two(self) -> None:
+    def _run_all_steps(self) -> None:
+        steps: list[tuple[Adw.ActionRow, Callable[[], bool]]] = [
+            (self.step_one_row, self._run_step_one),
+            (self.step_strip_nonstandard_row, self._run_step_strip_nonstandard),
+            (self.step_infer_case_row, self._run_step_infer_case),
+            (self.step_two_row, self._run_step_two),
+            (self.step_three_row, self._run_step_three),
+            (self.step_four_row, self._run_step_four),
+            (self.step_five_row, self._run_step_five),
+            (self.step_six_row, self._run_step_six),
+            (self.step_seven_row, self._run_step_seven),
+            (self.step_eight_row, self._run_step_eight),
+            (self.step_nine_row, self._run_step_nine),
+            (self.step_ten_row, self._run_step_ten),
+            (self.step_eleven_row, self._run_step_eleven),
+            (self.step_twelve_row, self._run_step_twelve),
+        ]
+        success = True
+        try:
+            for row, handler in steps:
+                GLib.idle_add(self._start_step, row)
+                if not handler():
+                    success = False
+                    break
+        except Exception as exc:
+            success = False
+            GLib.idle_add(self.show_toast, f"Pipeline failed: {exc}")
+        finally:
+            GLib.idle_add(self._finish_run_all, success)
+
+    def _finish_run_all(self, success: bool) -> None:
+        self._pipeline_running = False
+        self.run_all_button.set_sensitive(True)
+        self.step_list.set_sensitive(True)
+        self._stop_status()
+        if success:
+            self.show_toast("Pipeline complete.")
+        else:
+            self.show_toast("Pipeline stopped. Fix the errors and try again.")
+
+    def _run_step_two(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2210,13 +2283,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Classify pages failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Classify pages complete.")
         finally:
             GLib.idle_add(self.step_two_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_three(self) -> None:
+    def _run_step_three(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2257,13 +2333,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Classify dates failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Classify dates complete.")
         finally:
             GLib.idle_add(self.step_three_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_four(self) -> None:
+    def _run_step_four(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2304,13 +2383,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Classify reports failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Classify reports complete.")
         finally:
             GLib.idle_add(self.step_four_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_five(self) -> None:
+    def _run_step_five(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2351,13 +2433,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Classify forms failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Classify forms complete.")
         finally:
             GLib.idle_add(self.step_five_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_six(self) -> None:
+    def _run_step_six(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2441,13 +2526,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Build TOC failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Build TOC complete.")
         finally:
             GLib.idle_add(self.step_six_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_seven(self) -> None:
+    def _run_step_seven(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2545,13 +2633,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Find boundaries failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Find boundaries complete.")
         finally:
             GLib.idle_add(self.step_seven_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_eight(self) -> None:
+    def _run_step_eight(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2583,13 +2674,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Create raw failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Create raw complete.")
         finally:
             GLib.idle_add(self.step_eight_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_nine(self) -> None:
+    def _run_step_nine(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2677,13 +2771,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Create optimized failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Create optimized complete.")
         finally:
             GLib.idle_add(self.step_nine_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_ten(self) -> None:
+    def _run_step_ten(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2794,13 +2891,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Create summaries failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Create summaries complete.")
         finally:
             GLib.idle_add(self.step_ten_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_eleven(self) -> None:
+    def _run_step_eleven(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2845,13 +2945,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Case overview failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Case overview complete.")
         finally:
             GLib.idle_add(self.step_eleven_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
-    def _run_step_twelve(self) -> None:
+    def _run_step_twelve(self) -> bool:
+        success = False
         try:
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
@@ -2918,11 +3021,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Create RAG index failed: {exc}")
         else:
+            success = True
             self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Create RAG index complete.")
         finally:
             GLib.idle_add(self.step_twelve_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
 
     def _append_boundary_entry(
         self,
