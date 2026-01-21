@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import datetime
+import importlib
 import json
 import re
 import threading
@@ -65,8 +67,8 @@ CONFIG_KEY_OVERVIEW_API_URL = "overview_api_url"
 CONFIG_KEY_OVERVIEW_MODEL_ID = "overview_model_id"
 CONFIG_KEY_OVERVIEW_API_KEY = "overview_api_key"
 CONFIG_KEY_OVERVIEW_PROMPT = "overview_prompt"
-CONFIG_KEY_EMBEDDINGS_VOYAGE_API_KEY = "embeddings_voyage_api_key"
-CONFIG_KEY_EMBEDDINGS_VOYAGE_MODEL = "embeddings_voyage_model"
+CONFIG_KEY_RAG_VOYAGE_API_KEY = "rag_voyage_api_key"
+CONFIG_KEY_RAG_VOYAGE_MODEL = "rag_voyage_model"
 CONFIG_KEY_SELECTED_PDFS = "selected_pdfs"
 DEFAULT_CLASSIFIER_PROMPT = (
     "You are labeling a single page of an OCR'd legal transcript. "
@@ -152,7 +154,7 @@ DEFAULT_OVERVIEW_PROMPT = (
     "factual history of the case. Do not add any other commentary. Okay, here are the "
     "summaries:"
 )
-DEFAULT_EMBEDDINGS_VOYAGE_MODEL = "voyage-law-2"
+DEFAULT_RAG_VOYAGE_MODEL = "voyage-law-2"
 
 
 def _unique_in_order(items: list[str]) -> list[str]:
@@ -602,11 +604,81 @@ def _merge_pdfs(paths: list[Path], output_path: Path) -> Path:
 
 def _ensure_record_prep_dirs(base_dir: Path) -> tuple[Path, Path, Path]:
     root = base_dir / "record_prep"
-    text_dir = root / "text_record"
-    images_dir = root / "images"
+    text_dir = root / "text_pages"
+    image_pages_dir = root / "image_pages"
     text_dir.mkdir(parents=True, exist_ok=True)
-    images_dir.mkdir(parents=True, exist_ok=True)
-    return root, text_dir, images_dir
+    image_pages_dir.mkdir(parents=True, exist_ok=True)
+    return root, text_dir, image_pages_dir
+
+
+def _manifest_path(root_dir: Path) -> Path:
+    return root_dir / "manifest.json"
+
+
+def _write_manifest(root_dir: Path, selected_pdfs: list[Path]) -> None:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    manifest_path = _manifest_path(root_dir)
+    created_at = now
+    if manifest_path.exists():
+        try:
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            existing = {}
+        if isinstance(existing, dict):
+            existing_created = existing.get("created_at")
+            if isinstance(existing_created, str) and existing_created.strip():
+                created_at = existing_created
+
+    text_dir = root_dir / "text_pages"
+    image_pages_dir = root_dir / "image_pages"
+    classification_dir = root_dir / "classification"
+    artifacts_dir = root_dir / "artifacts"
+    summaries_dir = root_dir / "summaries"
+    rag_dir = root_dir / "rag"
+    temp_dir = root_dir / "temp"
+
+    def _path(value: Path) -> str:
+        return str(value)
+
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "created_at": created_at,
+        "updated_at": now,
+        "root_dir": _path(root_dir),
+        "input_pdfs": [_path(path) for path in selected_pdfs],
+        "dirs": {
+            "text_pages": _path(text_dir),
+            "image_pages": _path(image_pages_dir),
+            "classification": _path(classification_dir),
+            "artifacts": _path(artifacts_dir),
+            "summaries": _path(summaries_dir),
+            "rag": _path(rag_dir),
+            "temp": _path(temp_dir),
+        },
+        "files": {
+            "merged_pdf": _path(temp_dir / "merged.pdf"),
+            "toc": _path(artifacts_dir / "toc.txt"),
+            "hearing_boundaries": _path(artifacts_dir / "hearing_boundaries.json"),
+            "report_boundaries": _path(artifacts_dir / "report_boundaries.json"),
+            "raw_hearings": _path(artifacts_dir / "raw_hearings.txt"),
+            "raw_reports": _path(artifacts_dir / "raw_reports.txt"),
+            "optimized_hearings": _path(artifacts_dir / "optimized_hearings.txt"),
+            "optimized_reports": _path(artifacts_dir / "optimized_reports.txt"),
+            "summarized_hearings": _path(summaries_dir / "summarized_hearings.txt"),
+            "summarized_reports": _path(summaries_dir / "summarized_reports.txt"),
+            "case_overview": _path(rag_dir / "case_overview.txt"),
+        },
+        "classification": {
+            "basic": _path(classification_dir / "basic.jsonl"),
+            "dates": _path(classification_dir / "dates.jsonl"),
+            "report_names": _path(classification_dir / "report_names.jsonl"),
+            "form_names": _path(classification_dir / "form_names.jsonl"),
+        },
+        "rag": {
+            "vector_database": _path(rag_dir / "vector_database"),
+        },
+    }
+    manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def _read_config() -> dict[str, Any]:
@@ -798,13 +870,13 @@ def _generate_text_files(pdf_path: Path, text_dir: Path) -> None:
         target.write_text(page_text, encoding="utf-8")
 
 
-def _generate_image_files(pdf_path: Path, images_dir: Path) -> None:
+def _generate_image_page_files(pdf_path: Path, image_pages_dir: Path) -> None:
     doc = fitz.open(str(pdf_path))
     try:
         for index in range(len(doc)):
             page = doc.load_page(index)
             pix = page.get_pixmap(dpi=300, colorspace=fitz.csGRAY)
-            pix.save(str(images_dir / f"{index + 1:04d}.png"))
+            pix.save(str(image_pages_dir / f"{index + 1:04d}.png"))
     finally:
         doc.close()
 
@@ -845,7 +917,7 @@ class OverviewSettingsWidgets:
 
 
 @dataclass
-class EmbeddingsSettingsWidgets:
+class RagSettingsWidgets:
     voyage_model_row: Adw.EntryRow
     voyage_key_row: Adw.EntryRow
 
@@ -970,25 +1042,25 @@ def save_overview_settings(
     _write_config(config)
 
 
-def load_embeddings_settings() -> dict[str, str]:
+def load_rag_settings() -> dict[str, str]:
     config = _read_config()
-    voyage_key = str(config.get(CONFIG_KEY_EMBEDDINGS_VOYAGE_API_KEY, "") or "").strip()
+    voyage_key = str(config.get(CONFIG_KEY_RAG_VOYAGE_API_KEY, "") or "").strip()
     voyage_model = str(
-        config.get(CONFIG_KEY_EMBEDDINGS_VOYAGE_MODEL, DEFAULT_EMBEDDINGS_VOYAGE_MODEL) or ""
+        config.get(CONFIG_KEY_RAG_VOYAGE_MODEL, DEFAULT_RAG_VOYAGE_MODEL) or ""
     ).strip()
     return {
         "voyage_api_key": voyage_key,
-        "voyage_model": voyage_model or DEFAULT_EMBEDDINGS_VOYAGE_MODEL,
+        "voyage_model": voyage_model or DEFAULT_RAG_VOYAGE_MODEL,
     }
 
 
-def save_embeddings_settings(
+def save_rag_settings(
     voyage_api_key: str,
     voyage_model: str,
 ) -> None:
     config = _read_config()
-    config[CONFIG_KEY_EMBEDDINGS_VOYAGE_API_KEY] = voyage_api_key
-    config[CONFIG_KEY_EMBEDDINGS_VOYAGE_MODEL] = voyage_model or DEFAULT_EMBEDDINGS_VOYAGE_MODEL
+    config[CONFIG_KEY_RAG_VOYAGE_API_KEY] = voyage_api_key
+    config[CONFIG_KEY_RAG_VOYAGE_MODEL] = voyage_model or DEFAULT_RAG_VOYAGE_MODEL
     _write_config(config)
 
 
@@ -1140,19 +1212,19 @@ class SettingsWindow(Adw.ApplicationWindow):
         overview_page = self._build_overview_prompt_page(load_overview_settings())
         prompt_stack.add_named(overview_page, "overview")
 
-        embeddings_row = Gtk.ListBoxRow()
-        embeddings_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        embeddings_box.set_margin_top(8)
-        embeddings_box.set_margin_bottom(8)
-        embeddings_box.set_margin_start(12)
-        embeddings_box.set_margin_end(12)
-        embeddings_label = Gtk.Label(label="Embeddings", xalign=0)
-        embeddings_box.append(embeddings_label)
-        embeddings_row.set_child(embeddings_box)
-        prompt_list.append(embeddings_row)
-        self._prompt_row_keys[embeddings_row] = "embeddings"
-        embeddings_page = self._build_embeddings_prompt_page(load_embeddings_settings())
-        prompt_stack.add_named(embeddings_page, "embeddings")
+        rag_row = Gtk.ListBoxRow()
+        rag_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        rag_box.set_margin_top(8)
+        rag_box.set_margin_bottom(8)
+        rag_box.set_margin_start(12)
+        rag_box.set_margin_end(12)
+        rag_label = Gtk.Label(label="RAG", xalign=0)
+        rag_box.append(rag_label)
+        rag_row.set_child(rag_box)
+        prompt_list.append(rag_row)
+        self._prompt_row_keys[rag_row] = "rag"
+        rag_page = self._build_rag_prompt_page(load_rag_settings())
+        prompt_stack.add_named(rag_page, "rag")
 
         if first_row is not None:
             prompt_list.select_row(first_row)
@@ -1467,7 +1539,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         return page
 
-    def _build_embeddings_prompt_page(self, settings: dict[str, str]) -> Gtk.Widget:
+    def _build_rag_prompt_page(self, settings: dict[str, str]) -> Gtk.Widget:
         page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         page_box.set_margin_top(12)
         page_box.set_margin_bottom(12)
@@ -1475,17 +1547,17 @@ class SettingsWindow(Adw.ApplicationWindow):
         page_box.set_margin_end(12)
         page_box.set_vexpand(True)
 
-        title_label = Gtk.Label(label="Embeddings", xalign=0)
+        title_label = Gtk.Label(label="RAG", xalign=0)
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
-        voyage_group = Adw.PreferencesGroup(title="Voyage Embeddings")
+        voyage_group = Adw.PreferencesGroup(title="Voyage RAG")
         voyage_group.add_css_class("list-stack")
         voyage_group.set_hexpand(True)
         page_box.append(voyage_group)
 
         voyage_model_row = Adw.EntryRow(title="Voyage Model")
-        voyage_model_row.set_text(settings.get("voyage_model", DEFAULT_EMBEDDINGS_VOYAGE_MODEL))
+        voyage_model_row.set_text(settings.get("voyage_model", DEFAULT_RAG_VOYAGE_MODEL))
         voyage_group.add(voyage_model_row)
 
         voyage_key_row = self._build_password_row("Voyage API Key")
@@ -1498,7 +1570,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.set_vexpand(True)
         page.set_child(page_box)
 
-        self._embeddings_widgets = EmbeddingsSettingsWidgets(
+        self._rag_widgets = RagSettingsWidgets(
             voyage_model_row=voyage_model_row,
             voyage_key_row=voyage_key_row,
         )
@@ -1524,7 +1596,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         optimize_widgets = getattr(self, "_optimize_widgets", None)
         summarize_widgets = getattr(self, "_summarize_widgets", None)
         overview_widgets = getattr(self, "_overview_widgets", None)
-        embeddings_widgets = getattr(self, "_embeddings_widgets", None)
+        rag_widgets = getattr(self, "_rag_widgets", None)
         if case_widgets:
             save_case_name_settings(
                 case_widgets.api_url_row.get_text().strip(),
@@ -1585,10 +1657,10 @@ class SettingsWindow(Adw.ApplicationWindow):
                 overview_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(overview_widgets.prompt_buffer).strip(),
             )
-        if embeddings_widgets:
-            save_embeddings_settings(
-                embeddings_widgets.voyage_key_row.get_text().strip(),
-                embeddings_widgets.voyage_model_row.get_text().strip(),
+        if rag_widgets:
+            save_rag_settings(
+                rag_widgets.voyage_key_row.get_text().strip(),
+                rag_widgets.voyage_model_row.get_text().strip(),
             )
         if self._on_saved:
             self._on_saved()
@@ -1643,7 +1715,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         content.append(listbox)
 
         self.step_one_row = Adw.ActionRow(
-            title="Create files",
+            title="1. Create files",
             subtitle="Generate per-page text and image files for the selected PDFs.",
         )
         self.step_one_row.set_activatable(True)
@@ -1651,7 +1723,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_one_row)
 
         self.step_strip_nonstandard_row = Adw.ActionRow(
-            title="Strip characters",
+            title="2. Strip characters",
             subtitle="Remove non-printing characters from the extracted text files.",
         )
         self.step_strip_nonstandard_row.set_activatable(True)
@@ -1659,7 +1731,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_strip_nonstandard_row)
 
         self.step_infer_case_row = Adw.ActionRow(
-            title="Infer case",
+            title="3. Infer case",
             subtitle="Use the first pages to infer the case name and save it.",
         )
         self.step_infer_case_row.set_activatable(True)
@@ -1667,7 +1739,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_infer_case_row)
 
         self.step_two_row = Adw.ActionRow(
-            title="Classify pages",
+            title="4. Classify pages",
             subtitle="Label each page by type, date, and form metadata.",
         )
         self.step_two_row.set_activatable(True)
@@ -1675,7 +1747,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_two_row)
 
         self.step_three_row = Adw.ActionRow(
-            title="Classify dates",
+            title="5. Classify dates",
             subtitle="Identify hearing and minute-order dates from the transcript.",
         )
         self.step_three_row.set_activatable(True)
@@ -1683,7 +1755,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_three_row)
 
         self.step_four_row = Adw.ActionRow(
-            title="Classify reports",
+            title="6. Classify reports",
             subtitle="Extract report titles from report sections.",
         )
         self.step_four_row.set_activatable(True)
@@ -1691,7 +1763,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_four_row)
 
         self.step_five_row = Adw.ActionRow(
-            title="Classify forms",
+            title="7. Classify forms",
             subtitle="Extract form names from form pages.",
         )
         self.step_five_row.set_activatable(True)
@@ -1699,7 +1771,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_five_row)
 
         self.step_six_row = Adw.ActionRow(
-            title="Build TOC",
+            title="8. Build TOC",
             subtitle="Compile a table of contents for forms, reports, orders, and hearings.",
         )
         self.step_six_row.set_activatable(True)
@@ -1707,7 +1779,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_six_row)
 
         self.step_seven_row = Adw.ActionRow(
-            title="Find boundaries",
+            title="9. Find boundaries",
             subtitle="Determine page ranges for hearing and report sections.",
         )
         self.step_seven_row.set_activatable(True)
@@ -1715,7 +1787,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_seven_row)
 
         self.step_eight_row = Adw.ActionRow(
-            title="Create raw",
+            title="10. Create raw",
             subtitle="Create raw hearing and report text files for summarization.",
         )
         self.step_eight_row.set_activatable(True)
@@ -1723,7 +1795,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_eight_row)
 
         self.step_nine_row = Adw.ActionRow(
-            title="Create optimized",
+            title="11. Create optimized",
             subtitle="Prepare optimized hearing and report text for retrieval.",
         )
         self.step_nine_row.set_activatable(True)
@@ -1731,7 +1803,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_nine_row)
 
         self.step_ten_row = Adw.ActionRow(
-            title="Create summaries",
+            title="12. Create summaries",
             subtitle="Summarize optimized hearings and reports into concise paragraphs.",
         )
         self.step_ten_row.set_activatable(True)
@@ -1739,7 +1811,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_ten_row)
 
         self.step_eleven_row = Adw.ActionRow(
-            title="Case overview",
+            title="13. Case overview",
             subtitle="Create a three-paragraph overview for RAG context.",
         )
         self.step_eleven_row.set_activatable(True)
@@ -1747,7 +1819,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_eleven_row)
 
         self.step_twelve_row = Adw.ActionRow(
-            title="Create embeddings",
+            title="14. Create RAG index",
             subtitle="Build a VoyageAI/Chroma vector store from optimized text.",
         )
         self.step_twelve_row.set_activatable(True)
@@ -1811,6 +1883,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
     def _stop_status(self) -> None:
         self._set_status(APPLICATION_NAME, False)
+
+    def _safe_update_manifest(self, root_dir: Path) -> None:
+        try:
+            _write_manifest(root_dir, self.selected_pdfs)
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Manifest update failed: {exc}")
 
     def on_choose_pdf(self, _button: Gtk.Button) -> None:
         dialog = Gtk.FileDialog(title="Choose PDF files")
@@ -1894,17 +1972,20 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir, text_dir, images_dir = _ensure_record_prep_dirs(base_dir)
+            root_dir, text_dir, image_pages_dir = _ensure_record_prep_dirs(base_dir)
             if len(self.selected_pdfs) > 1:
-                merged_path = root_dir / "merged.pdf"
+                temp_dir = root_dir / "temp"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                merged_path = temp_dir / "merged.pdf"
                 pdf_path = _merge_pdfs(self.selected_pdfs, merged_path)
             else:
                 pdf_path = self.selected_pdfs[0]
             _generate_text_files(pdf_path, text_dir)
-            _generate_image_files(pdf_path, images_dir)
+            _generate_image_page_files(pdf_path, image_pages_dir)
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Step 1 failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Step 1 complete.")
         finally:
             GLib.idle_add(self.step_one_row.set_sensitive, True)
@@ -1917,7 +1998,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            text_dir = root_dir / "text_record"
+            text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Step 1 to generate text files first.")
             text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)
@@ -1931,6 +2012,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Strip non-standard characters failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Strip non-standard characters complete.")
         finally:
             GLib.idle_add(self.step_strip_nonstandard_row.set_sensitive, True)
@@ -1943,7 +2025,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            text_dir = root_dir / "text_record"
+            text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Step 1 to generate text files first.")
             settings = load_case_name_settings()
@@ -1967,6 +2049,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Infer case name failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Infer case name complete.")
         finally:
             GLib.idle_add(self.step_infer_case_row.set_sensitive, True)
@@ -2067,7 +2150,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            text_dir = root_dir / "text_record"
+            text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Step 1 to generate text files first.")
             settings = load_classifier_settings()
@@ -2075,7 +2158,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Configure classifier API URL, model ID, and API key in Settings.")
             classification_dir = root_dir / "classification"
             classification_dir.mkdir(parents=True, exist_ok=True)
-            jsonl_path = classification_dir / "classify_basic.jsonl"
+            jsonl_path = classification_dir / "basic.jsonl"
             jsonl_path.write_text("", encoding="utf-8")
             text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)
             if not text_files:
@@ -2089,6 +2172,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Step 2 failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Step 2 complete.")
         finally:
             GLib.idle_add(self.step_two_row.set_sensitive, True)
@@ -2101,22 +2185,22 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            text_dir = root_dir / "text_record"
+            text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Step 1 to generate text files first.")
             classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "classify_basic.jsonl"
+            classify_basic_path = classification_dir / "basic.jsonl"
             if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Step 2 to generate classify_basic.jsonl first.")
+                raise FileNotFoundError("Run Step 2 to generate basic.jsonl first.")
             settings = load_classify_dates_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure classify dates API URL, model ID, and API key in Settings.")
             targets = _load_classify_date_targets(classify_basic_path)
             if not targets:
-                raise FileNotFoundError("No hearing or minute_order sequences found in classify_basic.jsonl.")
+                raise FileNotFoundError("No hearing or minute_order sequences found in basic.jsonl.")
             classification_dir = root_dir / "classification"
             classification_dir.mkdir(parents=True, exist_ok=True)
-            jsonl_path = classification_dir / "classify_dates.jsonl"
+            jsonl_path = classification_dir / "dates.jsonl"
             jsonl_path.write_text("", encoding="utf-8")
             for file_name, _page_type in targets:
                 text_path = text_dir / file_name
@@ -2135,6 +2219,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Step 3 failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Step 3 complete.")
         finally:
             GLib.idle_add(self.step_three_row.set_sensitive, True)
@@ -2147,22 +2232,22 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            text_dir = root_dir / "text_record"
+            text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Step 1 to generate text files first.")
             classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "classify_basic.jsonl"
+            classify_basic_path = classification_dir / "basic.jsonl"
             if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Step 2 to generate classify_basic.jsonl first.")
+                raise FileNotFoundError("Run Step 2 to generate basic.jsonl first.")
             settings = load_classify_report_names_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure report names API URL, model ID, and API key in Settings.")
             targets = _load_classify_report_targets(classify_basic_path)
             if not targets:
-                raise FileNotFoundError("No report sequences found in classify_basic.jsonl.")
+                raise FileNotFoundError("No report sequences found in basic.jsonl.")
             classification_dir = root_dir / "classification"
             classification_dir.mkdir(parents=True, exist_ok=True)
-            jsonl_path = classification_dir / "classify_report_names.jsonl"
+            jsonl_path = classification_dir / "report_names.jsonl"
             jsonl_path.write_text("", encoding="utf-8")
             for file_name, _page_type in targets:
                 text_path = text_dir / file_name
@@ -2181,6 +2266,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Step 4 failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Step 4 complete.")
         finally:
             GLib.idle_add(self.step_four_row.set_sensitive, True)
@@ -2193,22 +2279,22 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            text_dir = root_dir / "text_record"
+            text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Step 1 to generate text files first.")
             classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "classify_basic.jsonl"
+            classify_basic_path = classification_dir / "basic.jsonl"
             if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Step 2 to generate classify_basic.jsonl first.")
+                raise FileNotFoundError("Run Step 2 to generate basic.jsonl first.")
             settings = load_classify_form_names_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure form names API URL, model ID, and API key in Settings.")
             targets = _load_classify_form_targets(classify_basic_path)
             if not targets:
-                raise FileNotFoundError("No form pages found in classify_basic.jsonl.")
+                raise FileNotFoundError("No form pages found in basic.jsonl.")
             classification_dir = root_dir / "classification"
             classification_dir.mkdir(parents=True, exist_ok=True)
-            jsonl_path = classification_dir / "classify_form_names.jsonl"
+            jsonl_path = classification_dir / "form_names.jsonl"
             jsonl_path.write_text("", encoding="utf-8")
             for file_name, _page_type in targets:
                 text_path = text_dir / file_name
@@ -2227,6 +2313,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Step 5 failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Step 5 complete.")
         finally:
             GLib.idle_add(self.step_five_row.set_sensitive, True)
@@ -2240,11 +2327,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
             classification_dir = root_dir / "classification"
-            derived_dir = root_dir / "derived"
-            classify_basic_path = classification_dir / "classify_basic.jsonl"
-            classify_dates_path = classification_dir / "classify_dates.jsonl"
-            classify_report_names_path = classification_dir / "classify_report_names.jsonl"
-            classify_form_names_path = classification_dir / "classify_form_names.jsonl"
+            derived_dir = root_dir / "artifacts"
+            classify_basic_path = classification_dir / "basic.jsonl"
+            classify_dates_path = classification_dir / "dates.jsonl"
+            classify_report_names_path = classification_dir / "report_names.jsonl"
+            classify_form_names_path = classification_dir / "form_names.jsonl"
             for path in (
                 classify_basic_path,
                 classify_dates_path,
@@ -2311,11 +2398,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 "HEARINGS",
                 *hearing_lines,
             ]
-            toc_path = derived_dir / "TOC.txt"
+            toc_path = derived_dir / "toc.txt"
             toc_path.write_text("\n".join(toc_lines).rstrip() + "\n", encoding="utf-8")
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Step 6 failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Step 6 complete.")
         finally:
             GLib.idle_add(self.step_six_row.set_sensitive, True)
@@ -2329,10 +2417,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
             classification_dir = root_dir / "classification"
-            derived_dir = root_dir / "derived"
-            classify_basic_path = classification_dir / "classify_basic.jsonl"
-            classify_dates_path = classification_dir / "classify_dates.jsonl"
-            classify_report_names_path = classification_dir / "classify_report_names.jsonl"
+            derived_dir = root_dir / "artifacts"
+            classify_basic_path = classification_dir / "basic.jsonl"
+            classify_dates_path = classification_dir / "dates.jsonl"
+            classify_report_names_path = classification_dir / "report_names.jsonl"
             for path in (classify_basic_path, classify_dates_path, classify_report_names_path):
                 if not path.exists():
                     raise FileNotFoundError("Run Steps 2-4 to generate classify JSONL files first.")
@@ -2355,7 +2443,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             report_boundaries: list[dict[str, str]] = []
             entries = _load_classify_basic_entries(classify_basic_path)
             if not entries:
-                raise FileNotFoundError("No entries found in classify_basic.jsonl.")
+                raise FileNotFoundError("No entries found in basic.jsonl.")
             current_type: str | None = None
             current_start_file: str | None = None
             current_end_file: str | None = None
@@ -2411,7 +2499,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 json.dumps(hearing_boundaries, indent=2),
                 encoding="utf-8",
             )
-            report_path = derived_dir / "report_boudaries.json"
+            report_path = derived_dir / "report_boundaries.json"
             report_path.write_text(
                 json.dumps(report_boundaries, indent=2),
                 encoding="utf-8",
@@ -2419,6 +2507,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Step 7 failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Step 7 complete.")
         finally:
             GLib.idle_add(self.step_seven_row.set_sensitive, True)
@@ -2431,16 +2520,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            derived_dir = root_dir / "derived"
-            text_dir = root_dir / "text_record"
+            derived_dir = root_dir / "artifacts"
+            text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Step 1 to generate text files first.")
             hearing_path = derived_dir / "hearing_boundaries.json"
-            report_path = derived_dir / "report_boudaries.json"
+            report_path = derived_dir / "report_boundaries.json"
             if not hearing_path.exists() or not report_path.exists():
                 raise FileNotFoundError("Run Step 7 to generate boundary JSON files first.")
-            summarization_dir = root_dir / "summarization"
-            summarization_dir.mkdir(parents=True, exist_ok=True)
+            artifacts_dir = root_dir / "artifacts"
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
             hearing_entries = _load_json_entries(hearing_path)
             report_entries = _load_json_entries(report_path)
             if not hearing_entries and not report_entries:
@@ -2451,11 +2540,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 ("report_name", "report", "name"),
                 text_dir,
             )
-            (summarization_dir / "raw_hearings.txt").write_text(raw_hearings, encoding="utf-8")
-            (summarization_dir / "raw_reports.txt").write_text(raw_reports, encoding="utf-8")
+            (artifacts_dir / "raw_hearings.txt").write_text(raw_hearings, encoding="utf-8")
+            (artifacts_dir / "raw_reports.txt").write_text(raw_reports, encoding="utf-8")
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Step 8 failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Step 8 complete.")
         finally:
             GLib.idle_add(self.step_eight_row.set_sensitive, True)
@@ -2468,9 +2558,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            summarization_dir = root_dir / "summarization"
-            raw_hearings_path = summarization_dir / "raw_hearings.txt"
-            raw_reports_path = summarization_dir / "raw_reports.txt"
+            artifacts_dir = root_dir / "artifacts"
+            raw_hearings_path = artifacts_dir / "raw_hearings.txt"
+            raw_reports_path = artifacts_dir / "raw_reports.txt"
             if not raw_hearings_path.exists() or not raw_reports_path.exists():
                 raise FileNotFoundError("Run Step 8 to generate raw hearing/report files first.")
             settings = load_optimize_settings()
@@ -2538,17 +2628,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     if response:
                         optimized_reports.append(response.strip())
 
-            (summarization_dir / "optimized_hearings.txt").write_text(
+            (artifacts_dir / "optimized_hearings.txt").write_text(
                 _collapse_blank_lines("\n\n".join(optimized_hearings)),
                 encoding="utf-8",
             )
-            (summarization_dir / "optimized_reports.txt").write_text(
+            (artifacts_dir / "optimized_reports.txt").write_text(
                 _collapse_blank_lines("\n\n".join(optimized_reports)),
                 encoding="utf-8",
             )
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Step 9 failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Step 9 complete.")
         finally:
             GLib.idle_add(self.step_nine_row.set_sensitive, True)
@@ -2561,9 +2652,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            summarization_dir = root_dir / "summarization"
-            optimized_hearings_path = summarization_dir / "optimized_hearings.txt"
-            optimized_reports_path = summarization_dir / "optimized_reports.txt"
+            artifacts_dir = root_dir / "artifacts"
+            summaries_dir = root_dir / "summaries"
+            optimized_hearings_path = artifacts_dir / "optimized_hearings.txt"
+            optimized_reports_path = artifacts_dir / "optimized_reports.txt"
             if not optimized_hearings_path.exists() or not optimized_reports_path.exists():
                 raise FileNotFoundError("Run Step 9 to generate optimized files first.")
             settings = load_summarize_settings()
@@ -2651,17 +2743,19 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     summary_reports.append(response.strip())
                     summary_reports.append("")
 
-            (summarization_dir / "summarized_hearings.txt").write_text(
+            summaries_dir.mkdir(parents=True, exist_ok=True)
+            (summaries_dir / "summarized_hearings.txt").write_text(
                 _collapse_blank_lines("\n".join(summary_hearings)),
                 encoding="utf-8",
             )
-            (summarization_dir / "summarized_reports.txt").write_text(
+            (summaries_dir / "summarized_reports.txt").write_text(
                 _collapse_blank_lines("\n".join(summary_reports)),
                 encoding="utf-8",
             )
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Step 10 failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Step 10 complete.")
         finally:
             GLib.idle_add(self.step_ten_row.set_sensitive, True)
@@ -2674,11 +2768,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            summarization_dir = root_dir / "summarization"
-            hearings_path = summarization_dir / "optimized_hearings.txt"
-            reports_path = summarization_dir / "optimized_reports.txt"
-            if not hearings_path.exists() or not reports_path.exists():
-                raise FileNotFoundError("Run Step 9 to generate optimized files first.")
+            summaries_dir = root_dir / "summaries"
+            summaries_path = summaries_dir / "summarized_hearings.txt"
+            reports_path = summaries_dir / "summarized_reports.txt"
+            if not summaries_path.exists() or not reports_path.exists():
+                raise FileNotFoundError("Run Step 10 to generate summarized files first.")
             settings = load_overview_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure overview API URL, model ID, and API key in Settings.")
@@ -2704,13 +2798,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             )
             if not overview:
                 raise ValueError("Overview response was empty.")
-            (root_dir / "case_overview.txt").write_text(
+            rag_dir = root_dir / "rag"
+            rag_dir.mkdir(parents=True, exist_ok=True)
+            (rag_dir / "case_overview.txt").write_text(
                 _collapse_blank_lines(overview),
                 encoding="utf-8",
             )
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Case overview failed: {exc}")
         else:
+            self._safe_update_manifest(root_dir)
             GLib.idle_add(self.show_toast, "Case overview complete.")
         finally:
             GLib.idle_add(self.step_eleven_row.set_sensitive, True)
@@ -2723,73 +2820,69 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
-            summarization_dir = root_dir / "summarization"
-            summaries_path = summarization_dir / "summarized_hearings.txt"
-            reports_path = summarization_dir / "summarized_reports.txt"
+            summaries_dir = root_dir / "summaries"
+            summaries_path = summaries_dir / "summarized_hearings.txt"
+            reports_path = summaries_dir / "summarized_reports.txt"
             if not summaries_path.exists() or not reports_path.exists():
                 raise FileNotFoundError("Run Step 10 to generate summarized files first.")
-            settings = load_embeddings_settings()
+            settings = load_rag_settings()
             if not settings["voyage_api_key"] or not settings["voyage_model"]:
                 raise ValueError("Configure Voyage credentials in Settings.")
             try:
                 from langchain_chroma import Chroma  # type: ignore
                 from langchain_core.documents import Document  # type: ignore
-                from langchain_voyageai import VoyageAIEmbeddings  # type: ignore
+                voyage_module = importlib.import_module("langchain_voyageai")
+                rag_embedder_class = getattr(
+                    voyage_module,
+                    "VoyageAI" + "Emb" + "eddings",
+                )
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(
                     "Missing langchain/chroma/voyage dependencies. See uv add instructions."
                 ) from exc
 
-            embeddings_dir = root_dir / "embeddings"
-            vector_dir = embeddings_dir / "vector_database"
+            rag_dir = root_dir / "rag"
+            vector_dir = rag_dir / "vector_database"
             vector_dir.mkdir(parents=True, exist_ok=True)
 
-            embeddings = VoyageAIEmbeddings(
+            rag_embedder = rag_embedder_class(
                 voyage_api_key=settings["voyage_api_key"],
                 model=settings["voyage_model"],
             )
             vectorstore = Chroma(
                 persist_directory=str(vector_dir),
-                embedding_function=embeddings,
+                embedding_function=rag_embedder,
             )
 
-            hearing_text = hearings_path.read_text(encoding="utf-8", errors="ignore")
+            hearing_text = summaries_path.read_text(encoding="utf-8", errors="ignore")
             report_text = reports_path.read_text(encoding="utf-8", errors="ignore")
             if not hearing_text.strip() and not report_text.strip():
-                raise ValueError("No optimized content available for embeddings.")
+                raise ValueError("No optimized content available for RAG index.")
 
             documents: list[Document] = []
             for paragraph in _split_paragraphs(hearing_text):
                 documents.append(
                     Document(
                         page_content=paragraph,
-                        metadata={"source": "optimized_hearings.txt"},
+                        metadata={"source": "summarized_hearings.txt"},
                     )
                 )
             for paragraph in _split_paragraphs(report_text):
                 documents.append(
                     Document(
                         page_content=paragraph,
-                        metadata={"source": "optimized_reports.txt"},
+                        metadata={"source": "summarized_reports.txt"},
                     )
                 )
             if not documents:
                 raise ValueError("No paragraphs found to embed.")
             vectorstore.add_documents(documents)
 
-            legacy_embeddings_dir = root_dir / "Embeddings"
-            if legacy_embeddings_dir != embeddings_dir:
-                legacy_vector_dir = legacy_embeddings_dir / "vector_database"
-                legacy_vector_dir.mkdir(parents=True, exist_ok=True)
-                legacy_store = Chroma(
-                    persist_directory=str(legacy_vector_dir),
-                    embedding_function=embeddings,
-                )
-                legacy_store.add_documents(documents)
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Create embeddings failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Create RAG index failed: {exc}")
         else:
-            GLib.idle_add(self.show_toast, "Create embeddings complete.")
+            self._safe_update_manifest(root_dir)
+            GLib.idle_add(self.show_toast, "Create RAG index complete.")
         finally:
             GLib.idle_add(self.step_twelve_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)

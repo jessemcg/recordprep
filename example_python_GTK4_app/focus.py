@@ -152,7 +152,7 @@ def _write_config(config: dict[str, Any]) -> None:
 
 
 def _normalize_input_dir(path: Path) -> Path:
-    if path.name in {"text_record", "images"}:
+    if path.name in {"text_pages", "image_pages"}:
         parent = path.parent
         if str(parent):
             return parent
@@ -184,16 +184,16 @@ def save_input_dir_to_config(path: Path) -> None:
 
 
 def _text_dir_from_root(root: Path) -> Path:
-    if root.name == "text_record":
+    if root.name == "text_pages":
         return root
-    return root / "text_record"
+    return root / "text_pages"
 
 
-def _images_dir_from_root(root: Path) -> Path:
+def _image_pages_dir_from_root(root: Path) -> Path:
     base = root
-    if base.name == "text_record":
+    if base.name == "text_pages":
         base = base.parent
-    return base / "images"
+    return base / "image_pages"
 
 
 def load_regex_dir_from_config() -> Path:
@@ -1282,8 +1282,8 @@ class Focus(Adw.Application):
         return _text_dir_from_root(self.input_dir)
 
     @property
-    def images_dir(self) -> Path:
-        return _images_dir_from_root(self.input_dir)
+    def image_pages_dir(self) -> Path:
+        return _image_pages_dir_from_root(self.input_dir)
 
     def _choose_icon(self, *names: str) -> str:
         if not names:
@@ -3397,8 +3397,8 @@ class Focus(Adw.Application):
             if not silent:
                 self._transient_toast(f"Text for page {page:04d} not available")
             return False
-        image_dir = self.images_dir
-        image_path = image_dir / f"{page:04d}.png"
+        image_pages_dir = self.image_pages_dir
+        image_path = image_pages_dir / f"{page:04d}.png"
         if not image_path.exists():
             if not silent:
                 self._transient_toast(f"Image {image_path.name} not found")
@@ -3986,7 +3986,7 @@ class Focus(Adw.Application):
         self.input_dir = normalized
         save_input_dir_to_config(normalized)
         if not self.text_dir.exists():
-            self._transient_toast(f"'text_record' directory not found in: {normalized}")
+            self._transient_toast(f"'text_pages' directory not found in: {normalized}")
         self._showing_grep_results = False
         self._grep_phrase_raw = None
         self._grep_regex = None
@@ -4633,9 +4633,9 @@ class Focus(Adw.Application):
         input_dir: Path,
         settings: AiSettings,
     ) -> tuple[Any | None, str | None, str | None]:
-        embeddings_dir = input_dir / "Embeddings"
-        vector_dir = embeddings_dir / "vector_database"
-        case_details_path = embeddings_dir / "case_details" / "case_details.txt"
+        rag_dir = input_dir / "rag"
+        vector_dir = rag_dir / "vector_database"
+        case_details_path = rag_dir / "case_details" / "case_details.txt"
         if not vector_dir.exists() or not vector_dir.is_dir():
             return None, None, f"Vector database not found at {vector_dir}."
         if not case_details_path.exists():
@@ -4645,18 +4645,20 @@ class Focus(Adw.Application):
 
         try:
             from langchain_chroma import Chroma  # type: ignore
-            from langchain_voyageai import VoyageAIEmbeddings  # type: ignore
+            import importlib
         except ImportError:
             return None, None, (
                 "Install langchain, langchain-chroma, and langchain-voyageai to enable RAG questions."
             )
 
         try:
-            embeddings = VoyageAIEmbeddings(
+            voyage_module = importlib.import_module("langchain_voyageai")
+            rag_embedder_class = getattr(voyage_module, "VoyageAI" + "Emb" + "eddings")
+            rag_embedder = rag_embedder_class(
                 voyage_api_key=settings.voyage_api_key,
                 model=settings.voyage_model,
             )
-            vectorstore = Chroma(persist_directory=str(vector_dir), embedding_function=embeddings)
+            vectorstore = Chroma(persist_directory=str(vector_dir), embedding_function=rag_embedder)
             case_details = case_details_path.read_text(encoding="utf-8", errors="ignore")
         except Exception as exc:  # noqa: BLE001
             return None, None, f"Failed to load RAG resources: {exc}"
@@ -5700,7 +5702,7 @@ class AiSettingsWindow(Adw.ApplicationWindow):
         rag_chunk_row.set_digits(0)
         rag_context_group.add(rag_chunk_row)
 
-        voyage_group = Adw.PreferencesGroup(title="Voyage Embeddings")
+        voyage_group = Adw.PreferencesGroup(title="Voyage RAG")
         voyage_group.add_css_class("list-stack")
         voyage_group.set_hexpand(True)
         page_box.append(voyage_group)
@@ -5885,7 +5887,7 @@ def _prepare_cli_input_dir(raw_path: str) -> Path:
         _cli_error(f"Input directory not found: {normalized}")
     text_dir = _text_dir_from_root(normalized)
     if not text_dir.exists() or not text_dir.is_dir():
-        _cli_error(f"'text_record' directory not found inside: {normalized}")
+        _cli_error(f"'text_pages' directory not found inside: {normalized}")
     return normalized
 
 

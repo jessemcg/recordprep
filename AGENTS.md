@@ -13,8 +13,8 @@ UI expectations:
 - Settings opens an Adw.PreferencesWindow for prompt/credential configuration.
 
 Pipeline step 1 (current):
-- Create `record_prep/text_record` and `record_prep/images` alongside the input PDF.
-- If multiple PDFs are chosen, merge them in alphanumeric order into `record_prep/merged.pdf` before processing.
+- Create `record_prep/text_pages` and `record_prep/image_pages` alongside the input PDF.
+- If multiple PDFs are chosen, merge them in alphanumeric order into `record_prep/temp/merged.pdf` before processing.
 - Use `pdftotext` with layout preservation for per-page text files named `0001.txt`, `0002.txt`, etc.
 - Render grayscale PNGs at 300 DPI named `0001.png`, `0002.png`, etc. using PyMuPDF.
 
