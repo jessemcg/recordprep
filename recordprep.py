@@ -2127,7 +2127,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     def _load_case_context(self) -> None:
         case_name, _root_dir = load_case_context()
         if case_name:
-            self.selected_label.set_text(f"Selected: {case_name}")
+            display_name = case_name.replace("_", " ") if case_name else case_name
+            self.selected_label.set_text(f"Selected: {display_name}")
 
     def on_run_all_clicked(self, _button: Gtk.Button) -> None:
         if not self.selected_pdfs:
@@ -2251,7 +2252,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Unable to infer case name from first three pages.")
             (root_dir / "case_name.txt").write_text(case_name, encoding="utf-8")
             save_case_context(case_name, base_dir)
-            GLib.idle_add(self.selected_label.set_text, f"Selected: {case_name}")
+            display_name = case_name.replace("_", " ") if case_name else case_name
+            GLib.idle_add(self.selected_label.set_text, f"Selected: {display_name}")
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Infer case name failed: {exc}")
         else:
