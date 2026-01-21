@@ -2955,9 +2955,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
             minutes_outline: list[str] = []
             if display_case_name:
-                minutes_outline.extend(["Minutes Outline", display_case_name, ""])
+                minutes_outline.extend(["Minutes Summary", display_case_name, ""])
             else:
-                minutes_outline.append("Minutes Outline")
+                minutes_outline.append("Minutes Summary")
 
             minute_entries = _load_json_entries(minutes_boundaries_path)
             for entry in minute_entries:
