@@ -804,6 +804,11 @@ def load_classify_dates_settings() -> dict[str, str]:
     model_id = str(config.get(CONFIG_KEY_CLASSIFY_DATES_MODEL_ID, "") or "").strip()
     api_key = str(config.get(CONFIG_KEY_CLASSIFY_DATES_API_KEY, "") or "").strip()
     prompt = str(config.get(CONFIG_KEY_CLASSIFY_DATES_PROMPT, DEFAULT_CLASSIFY_DATES_PROMPT) or "").strip()
+    if not (api_url and model_id and api_key):
+        shared = load_classifier_settings()
+        api_url = api_url or shared["api_url"]
+        model_id = model_id or shared["model_id"]
+        api_key = api_key or shared["api_key"]
     return {
         "api_url": api_url,
         "model_id": model_id,
@@ -827,6 +832,11 @@ def load_classify_report_names_settings() -> dict[str, str]:
     model_id = str(config.get(CONFIG_KEY_CLASSIFY_REPORTS_MODEL_ID, "") or "").strip()
     api_key = str(config.get(CONFIG_KEY_CLASSIFY_REPORTS_API_KEY, "") or "").strip()
     prompt = str(config.get(CONFIG_KEY_CLASSIFY_REPORTS_PROMPT, DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT) or "").strip()
+    if not (api_url and model_id and api_key):
+        shared = load_classifier_settings()
+        api_url = api_url or shared["api_url"]
+        model_id = model_id or shared["model_id"]
+        api_key = api_key or shared["api_key"]
     return {
         "api_url": api_url,
         "model_id": model_id,
@@ -855,6 +865,11 @@ def load_classify_form_names_settings() -> dict[str, str]:
     model_id = str(config.get(CONFIG_KEY_CLASSIFY_FORMS_MODEL_ID, "") or "").strip()
     api_key = str(config.get(CONFIG_KEY_CLASSIFY_FORMS_API_KEY, "") or "").strip()
     prompt = str(config.get(CONFIG_KEY_CLASSIFY_FORMS_PROMPT, DEFAULT_CLASSIFY_FORM_NAMES_PROMPT) or "").strip()
+    if not (api_url and model_id and api_key):
+        shared = load_classifier_settings()
+        api_url = api_url or shared["api_url"]
+        model_id = model_id or shared["model_id"]
+        api_key = api_key or shared["api_key"]
     return {
         "api_url": api_url,
         "model_id": model_id,
@@ -955,6 +970,17 @@ class ClassifySettingsWidgets:
     model_row: Adw.EntryRow
     api_key_row: Adw.EntryRow
     prompt_buffer: Gtk.TextBuffer
+
+
+@dataclass
+class ClassifyCombinedSettingsWidgets:
+    api_url_row: Adw.EntryRow
+    model_row: Adw.EntryRow
+    api_key_row: Adw.EntryRow
+    basic_prompt_buffer: Gtk.TextBuffer
+    dates_prompt_buffer: Gtk.TextBuffer
+    reports_prompt_buffer: Gtk.TextBuffer
+    forms_prompt_buffer: Gtk.TextBuffer
 
 
 @dataclass
@@ -1149,6 +1175,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.set_resizable(True)
         self._on_saved = on_saved
         self._prompt_editors: dict[str, ClassifySettingsWidgets] = {}
+        self._classify_widgets: ClassifyCombinedSettingsWidgets | None = None
         self._prompt_row_keys: dict[Gtk.ListBoxRow, str] = {}
         self._build_ui()
 
@@ -1214,20 +1241,6 @@ class SettingsWindow(Adw.ApplicationWindow):
 
         prompt_definitions = [
             ("case-name", "Infer Case Name", load_case_name_settings(), DEFAULT_CASE_NAME_PROMPT),
-            ("basic", "Classify Basic", load_classifier_settings(), DEFAULT_CLASSIFIER_PROMPT),
-            ("dates", "Classify Dates", load_classify_dates_settings(), DEFAULT_CLASSIFY_DATES_PROMPT),
-            (
-                "report-names",
-                "Classify Report Names",
-                load_classify_report_names_settings(),
-                DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT,
-            ),
-            (
-                "form-names",
-                "Classify Form Names",
-                load_classify_form_names_settings(),
-                DEFAULT_CLASSIFY_FORM_NAMES_PROMPT,
-            ),
         ]
         first_row: Gtk.ListBoxRow | None = None
         for key, title, settings, default_prompt in prompt_definitions:
@@ -1247,6 +1260,20 @@ class SettingsWindow(Adw.ApplicationWindow):
 
             page = self._build_prompt_page(key, title, settings, default_prompt)
             prompt_stack.add_named(page, key)
+
+        classify_row = Gtk.ListBoxRow()
+        classify_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        classify_box.set_margin_top(8)
+        classify_box.set_margin_bottom(8)
+        classify_box.set_margin_start(12)
+        classify_box.set_margin_end(12)
+        classify_label = Gtk.Label(label="Classify", xalign=0)
+        classify_box.append(classify_label)
+        classify_row.set_child(classify_box)
+        prompt_list.append(classify_row)
+        self._prompt_row_keys[classify_row] = "classify"
+        classify_page = self._build_classify_prompt_page()
+        prompt_stack.add_named(classify_page, "classify")
 
         optimize_row = Gtk.ListBoxRow()
         optimize_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -1413,6 +1440,95 @@ class SettingsWindow(Adw.ApplicationWindow):
             model_row=model_row,
             api_key_row=api_key_row,
             prompt_buffer=buffer,
+        )
+        return page
+
+    def _build_classify_prompt_page(self) -> Gtk.Widget:
+        settings = load_classifier_settings()
+        dates_settings = load_classify_dates_settings()
+        reports_settings = load_classify_report_names_settings()
+        forms_settings = load_classify_form_names_settings()
+
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page_box.set_margin_top(12)
+        page_box.set_margin_bottom(12)
+        page_box.set_margin_start(12)
+        page_box.set_margin_end(12)
+        page_box.set_vexpand(True)
+
+        title_label = Gtk.Label(label="Classify", xalign=0)
+        title_label.add_css_class("title-3")
+        page_box.append(title_label)
+
+        credentials_group = Adw.PreferencesGroup(title="Credentials")
+        credentials_group.add_css_class("list-stack")
+        credentials_group.set_hexpand(True)
+        page_box.append(credentials_group)
+
+        api_url_row = Adw.EntryRow(title="API URL")
+        api_url_row.set_text(settings.get("api_url", ""))
+        credentials_group.add(api_url_row)
+
+        model_row = Adw.EntryRow(title="Model ID (optional)")
+        model_row.set_text(settings.get("model_id", ""))
+        credentials_group.add(model_row)
+
+        api_key_row = self._build_password_row("API Key")
+        api_key_row.set_text(settings.get("api_key", ""))
+        credentials_group.add(api_key_row)
+
+        prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        prompt_section.set_hexpand(True)
+        prompt_section.set_vexpand(True)
+
+        basic_label = Gtk.Label(label="Classify Basic Prompt", xalign=0)
+        basic_label.add_css_class("dim-label")
+        prompt_section.append(basic_label)
+        basic_scroller, basic_buffer = self._build_prompt_editor(
+            settings.get("prompt") or DEFAULT_CLASSIFIER_PROMPT
+        )
+        prompt_section.append(basic_scroller)
+
+        dates_label = Gtk.Label(label="Classify Dates Prompt", xalign=0)
+        dates_label.add_css_class("dim-label")
+        prompt_section.append(dates_label)
+        dates_scroller, dates_buffer = self._build_prompt_editor(
+            dates_settings.get("prompt") or DEFAULT_CLASSIFY_DATES_PROMPT
+        )
+        prompt_section.append(dates_scroller)
+
+        reports_label = Gtk.Label(label="Classify Report Names Prompt", xalign=0)
+        reports_label.add_css_class("dim-label")
+        prompt_section.append(reports_label)
+        reports_scroller, reports_buffer = self._build_prompt_editor(
+            reports_settings.get("prompt") or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT
+        )
+        prompt_section.append(reports_scroller)
+
+        forms_label = Gtk.Label(label="Classify Form Names Prompt", xalign=0)
+        forms_label.add_css_class("dim-label")
+        prompt_section.append(forms_label)
+        forms_scroller, forms_buffer = self._build_prompt_editor(
+            forms_settings.get("prompt") or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT
+        )
+        prompt_section.append(forms_scroller)
+
+        page_box.append(prompt_section)
+
+        page = Gtk.ScrolledWindow()
+        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page.set_hexpand(True)
+        page.set_vexpand(True)
+        page.set_child(page_box)
+
+        self._classify_widgets = ClassifyCombinedSettingsWidgets(
+            api_url_row=api_url_row,
+            model_row=model_row,
+            api_key_row=api_key_row,
+            basic_prompt_buffer=basic_buffer,
+            dates_prompt_buffer=dates_buffer,
+            reports_prompt_buffer=reports_buffer,
+            forms_prompt_buffer=forms_buffer,
         )
         return page
 
@@ -1676,10 +1792,7 @@ class SettingsWindow(Adw.ApplicationWindow):
 
     def _save_settings(self) -> None:
         case_widgets = self._prompt_editors.get("case-name")
-        basic_widgets = self._prompt_editors.get("basic")
-        dates_widgets = self._prompt_editors.get("dates")
-        report_widgets = self._prompt_editors.get("report-names")
-        form_widgets = self._prompt_editors.get("form-names")
+        classify_widgets = self._classify_widgets
         optimize_widgets = getattr(self, "_optimize_widgets", None)
         summarize_widgets = getattr(self, "_summarize_widgets", None)
         overview_widgets = getattr(self, "_overview_widgets", None)
@@ -1691,33 +1804,33 @@ class SettingsWindow(Adw.ApplicationWindow):
                 case_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(case_widgets.prompt_buffer).strip(),
             )
-        if basic_widgets:
+        if classify_widgets:
+            api_url = classify_widgets.api_url_row.get_text().strip()
+            model_id = classify_widgets.model_row.get_text().strip()
+            api_key = classify_widgets.api_key_row.get_text().strip()
             save_classifier_settings(
-                basic_widgets.api_url_row.get_text().strip(),
-                basic_widgets.model_row.get_text().strip(),
-                basic_widgets.api_key_row.get_text().strip(),
-                self._prompt_text(basic_widgets.prompt_buffer).strip(),
+                api_url,
+                model_id,
+                api_key,
+                self._prompt_text(classify_widgets.basic_prompt_buffer).strip(),
             )
-        if dates_widgets:
             save_classify_dates_settings(
-                dates_widgets.api_url_row.get_text().strip(),
-                dates_widgets.model_row.get_text().strip(),
-                dates_widgets.api_key_row.get_text().strip(),
-                self._prompt_text(dates_widgets.prompt_buffer).strip(),
+                api_url,
+                model_id,
+                api_key,
+                self._prompt_text(classify_widgets.dates_prompt_buffer).strip(),
             )
-        if report_widgets:
             save_classify_report_names_settings(
-                report_widgets.api_url_row.get_text().strip(),
-                report_widgets.model_row.get_text().strip(),
-                report_widgets.api_key_row.get_text().strip(),
-                self._prompt_text(report_widgets.prompt_buffer).strip(),
+                api_url,
+                model_id,
+                api_key,
+                self._prompt_text(classify_widgets.reports_prompt_buffer).strip(),
             )
-        if form_widgets:
             save_classify_form_names_settings(
-                form_widgets.api_url_row.get_text().strip(),
-                form_widgets.model_row.get_text().strip(),
-                form_widgets.api_key_row.get_text().strip(),
-                self._prompt_text(form_widgets.prompt_buffer).strip(),
+                api_url,
+                model_id,
+                api_key,
+                self._prompt_text(classify_widgets.forms_prompt_buffer).strip(),
             )
         if optimize_widgets:
             save_optimize_settings(
@@ -1833,36 +1946,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_list.append(self.step_infer_case_row)
 
         self.step_two_row = Adw.ActionRow(
-            title="Classify pages",
-            subtitle="Label each page by type, date, and form metadata.",
+            title="Classify",
+            subtitle="Create basic, dates, report-name, and form-name classifications.",
         )
         self.step_two_row.set_activatable(True)
         self.step_two_row.connect("activated", self.on_step_two_clicked)
         self.step_list.append(self.step_two_row)
-
-        self.step_three_row = Adw.ActionRow(
-            title="Classify dates",
-            subtitle="Identify hearing and minute-order dates from the transcript.",
-        )
-        self.step_three_row.set_activatable(True)
-        self.step_three_row.connect("activated", self.on_step_three_clicked)
-        self.step_list.append(self.step_three_row)
-
-        self.step_four_row = Adw.ActionRow(
-            title="Classify reports",
-            subtitle="Extract report titles from report sections.",
-        )
-        self.step_four_row.set_activatable(True)
-        self.step_four_row.connect("activated", self.on_step_four_clicked)
-        self.step_list.append(self.step_four_row)
-
-        self.step_five_row = Adw.ActionRow(
-            title="Classify forms",
-            subtitle="Extract form names from form pages.",
-        )
-        self.step_five_row.set_activatable(True)
-        self.step_five_row.connect("activated", self.on_step_five_clicked)
-        self.step_list.append(self.step_five_row)
 
         self.step_six_row = Adw.ActionRow(
             title="Build TOC",
@@ -2182,30 +2271,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._start_step(self.step_two_row)
         threading.Thread(target=self._run_step_two, daemon=True).start()
 
-    def on_step_three_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
-            return
-        self.step_three_row.set_sensitive(False)
-        self._start_step(self.step_three_row)
-        threading.Thread(target=self._run_step_three, daemon=True).start()
-
-    def on_step_four_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
-            return
-        self.step_four_row.set_sensitive(False)
-        self._start_step(self.step_four_row)
-        threading.Thread(target=self._run_step_four, daemon=True).start()
-
-    def on_step_five_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
-            return
-        self.step_five_row.set_sensitive(False)
-        self._start_step(self.step_five_row)
-        threading.Thread(target=self._run_step_five, daemon=True).start()
-
     def on_step_six_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
@@ -2268,9 +2333,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             (self.step_strip_nonstandard_row, self._run_step_strip_nonstandard),
             (self.step_infer_case_row, self._run_step_infer_case),
             (self.step_two_row, self._run_step_two),
-            (self.step_three_row, self._run_step_three),
-            (self.step_four_row, self._run_step_four),
-            (self.step_five_row, self._run_step_five),
             (self.step_six_row, self._run_step_six),
             (self.step_seven_row, self._run_step_seven),
             (self.step_eight_row, self._run_step_eight),
@@ -2313,180 +2375,124 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
-            settings = load_classifier_settings()
-            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
-                raise ValueError("Configure classifier API URL, model ID, and API key in Settings.")
+            shared_settings = load_classifier_settings()
+            if (
+                not shared_settings["api_url"]
+                or not shared_settings["model_id"]
+                or not shared_settings["api_key"]
+            ):
+                raise ValueError("Configure classify API URL, model ID, and API key in Settings.")
             classification_dir = root_dir / "classification"
             classification_dir.mkdir(parents=True, exist_ok=True)
-            jsonl_path = classification_dir / "basic.jsonl"
-            jsonl_path.write_text("", encoding="utf-8")
+            classify_basic_path = classification_dir / "basic.jsonl"
+            classify_basic_path.write_text("", encoding="utf-8")
             text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)
             if not text_files:
                 raise FileNotFoundError("No text files found to classify.")
+            basic_settings = {
+                "api_url": shared_settings["api_url"],
+                "model_id": shared_settings["model_id"],
+                "api_key": shared_settings["api_key"],
+                "prompt": shared_settings["prompt"],
+            }
             for text_path in text_files:
                 content = text_path.read_text(encoding="utf-8", errors="ignore")
-                entry = self._classify_text(settings, text_path.name, content)
-                with jsonl_path.open("a", encoding="utf-8") as handle:
+                entry = self._classify_text(basic_settings, text_path.name, content)
+                with classify_basic_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(entry))
                     handle.write("\n")
+
+            classify_dates_path = classification_dir / "dates.jsonl"
+            classify_dates_path.write_text("", encoding="utf-8")
+            dates_settings = load_classify_dates_settings()
+            date_targets = _load_classify_date_targets(classify_basic_path)
+            if date_targets:
+                date_settings = {
+                    "api_url": shared_settings["api_url"],
+                    "model_id": shared_settings["model_id"],
+                    "api_key": shared_settings["api_key"],
+                    "prompt": dates_settings["prompt"],
+                }
+                for file_name, _page_type in date_targets:
+                    text_path = text_dir / file_name
+                    if not text_path.exists():
+                        raise FileNotFoundError(
+                            f"Missing text file {file_name} for date classification."
+                        )
+                    content = text_path.read_text(encoding="utf-8", errors="ignore")
+                    entry = self._classify_text(date_settings, file_name, content)
+                    ordered_entry: dict[str, str] = {"file_name": file_name}
+                    for key, value in entry.items():
+                        if key == "file_name":
+                            continue
+                        ordered_entry[key] = value
+                    with classify_dates_path.open("a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(ordered_entry))
+                        handle.write("\n")
+
+            classify_report_names_path = classification_dir / "report_names.jsonl"
+            classify_report_names_path.write_text("", encoding="utf-8")
+            report_settings = load_classify_report_names_settings()
+            report_targets = _load_classify_report_targets(classify_basic_path)
+            if report_targets:
+                report_settings_payload = {
+                    "api_url": shared_settings["api_url"],
+                    "model_id": shared_settings["model_id"],
+                    "api_key": shared_settings["api_key"],
+                    "prompt": report_settings["prompt"],
+                }
+                for file_name, _page_type in report_targets:
+                    text_path = text_dir / file_name
+                    if not text_path.exists():
+                        raise FileNotFoundError(
+                            f"Missing text file {file_name} for report name classification."
+                        )
+                    content = text_path.read_text(encoding="utf-8", errors="ignore")
+                    entry = self._classify_text(report_settings_payload, file_name, content)
+                    ordered_entry: dict[str, str] = {"file_name": file_name}
+                    for key, value in entry.items():
+                        if key == "file_name":
+                            continue
+                        ordered_entry[key] = value
+                    with classify_report_names_path.open("a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(ordered_entry))
+                        handle.write("\n")
+
+            classify_form_names_path = classification_dir / "form_names.jsonl"
+            classify_form_names_path.write_text("", encoding="utf-8")
+            form_settings = load_classify_form_names_settings()
+            form_targets = _load_classify_form_targets(classify_basic_path)
+            if form_targets:
+                form_settings_payload = {
+                    "api_url": shared_settings["api_url"],
+                    "model_id": shared_settings["model_id"],
+                    "api_key": shared_settings["api_key"],
+                    "prompt": form_settings["prompt"],
+                }
+                for file_name, _page_type in form_targets:
+                    text_path = text_dir / file_name
+                    if not text_path.exists():
+                        raise FileNotFoundError(
+                            f"Missing text file {file_name} for form name classification."
+                        )
+                    content = text_path.read_text(encoding="utf-8", errors="ignore")
+                    entry = self._classify_text(form_settings_payload, file_name, content)
+                    ordered_entry: dict[str, str] = {"file_name": file_name}
+                    for key, value in entry.items():
+                        if key == "file_name":
+                            continue
+                        ordered_entry[key] = value
+                    with classify_form_names_path.open("a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(ordered_entry))
+                        handle.write("\n")
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Classify pages failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Classify failed: {exc}")
         else:
             success = True
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Classify pages complete.")
+            GLib.idle_add(self.show_toast, "Classify complete.")
         finally:
             GLib.idle_add(self.step_two_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status_if_idle)
-        return success
-
-    def _run_step_three(self) -> bool:
-        success = False
-        try:
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
-            text_dir = root_dir / "text_pages"
-            if not text_dir.exists():
-                raise FileNotFoundError("Run Create files to generate text files first.")
-            classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "basic.jsonl"
-            if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Classify pages to generate basic.jsonl first.")
-            settings = load_classify_dates_settings()
-            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
-                raise ValueError("Configure classify dates API URL, model ID, and API key in Settings.")
-            targets = _load_classify_date_targets(classify_basic_path)
-            if not targets:
-                raise FileNotFoundError("No hearing or minute_order sequences found in basic.jsonl.")
-            classification_dir = root_dir / "classification"
-            classification_dir.mkdir(parents=True, exist_ok=True)
-            jsonl_path = classification_dir / "dates.jsonl"
-            jsonl_path.write_text("", encoding="utf-8")
-            for file_name, _page_type in targets:
-                text_path = text_dir / file_name
-                if not text_path.exists():
-                    raise FileNotFoundError(f"Missing text file {file_name} for date classification.")
-                content = text_path.read_text(encoding="utf-8", errors="ignore")
-                entry = self._classify_text(settings, file_name, content)
-                ordered_entry: dict[str, str] = {"file_name": file_name}
-                for key, value in entry.items():
-                    if key == "file_name":
-                        continue
-                    ordered_entry[key] = value
-                with jsonl_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(ordered_entry))
-                    handle.write("\n")
-        except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Classify dates failed: {exc}")
-        else:
-            success = True
-            self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Classify dates complete.")
-        finally:
-            GLib.idle_add(self.step_three_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status_if_idle)
-        return success
-
-    def _run_step_four(self) -> bool:
-        success = False
-        try:
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
-            text_dir = root_dir / "text_pages"
-            if not text_dir.exists():
-                raise FileNotFoundError("Run Create files to generate text files first.")
-            classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "basic.jsonl"
-            if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Classify pages to generate basic.jsonl first.")
-            settings = load_classify_report_names_settings()
-            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
-                raise ValueError("Configure report names API URL, model ID, and API key in Settings.")
-            targets = _load_classify_report_targets(classify_basic_path)
-            if not targets:
-                raise FileNotFoundError("No report sequences found in basic.jsonl.")
-            classification_dir = root_dir / "classification"
-            classification_dir.mkdir(parents=True, exist_ok=True)
-            jsonl_path = classification_dir / "report_names.jsonl"
-            jsonl_path.write_text("", encoding="utf-8")
-            for file_name, _page_type in targets:
-                text_path = text_dir / file_name
-                if not text_path.exists():
-                    raise FileNotFoundError(f"Missing text file {file_name} for report name classification.")
-                content = text_path.read_text(encoding="utf-8", errors="ignore")
-                entry = self._classify_text(settings, file_name, content)
-                ordered_entry: dict[str, str] = {"file_name": file_name}
-                for key, value in entry.items():
-                    if key == "file_name":
-                        continue
-                    ordered_entry[key] = value
-                with jsonl_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(ordered_entry))
-                    handle.write("\n")
-        except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Classify reports failed: {exc}")
-        else:
-            success = True
-            self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Classify reports complete.")
-        finally:
-            GLib.idle_add(self.step_four_row.set_sensitive, True)
-            GLib.idle_add(self._stop_status_if_idle)
-        return success
-
-    def _run_step_five(self) -> bool:
-        success = False
-        try:
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
-            text_dir = root_dir / "text_pages"
-            if not text_dir.exists():
-                raise FileNotFoundError("Run Create files to generate text files first.")
-            classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "basic.jsonl"
-            if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Classify pages to generate basic.jsonl first.")
-            settings = load_classify_form_names_settings()
-            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
-                raise ValueError("Configure form names API URL, model ID, and API key in Settings.")
-            targets = _load_classify_form_targets(classify_basic_path)
-            if not targets:
-                raise FileNotFoundError("No form pages found in basic.jsonl.")
-            classification_dir = root_dir / "classification"
-            classification_dir.mkdir(parents=True, exist_ok=True)
-            jsonl_path = classification_dir / "form_names.jsonl"
-            jsonl_path.write_text("", encoding="utf-8")
-            for file_name, _page_type in targets:
-                text_path = text_dir / file_name
-                if not text_path.exists():
-                    raise FileNotFoundError(f"Missing text file {file_name} for form name classification.")
-                content = text_path.read_text(encoding="utf-8", errors="ignore")
-                entry = self._classify_text(settings, file_name, content)
-                ordered_entry: dict[str, str] = {"file_name": file_name}
-                for key, value in entry.items():
-                    if key == "file_name":
-                        continue
-                    ordered_entry[key] = value
-                with jsonl_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(ordered_entry))
-                    handle.write("\n")
-        except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Classify forms failed: {exc}")
-        else:
-            success = True
-            self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Classify forms complete.")
-        finally:
-            GLib.idle_add(self.step_five_row.set_sensitive, True)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
