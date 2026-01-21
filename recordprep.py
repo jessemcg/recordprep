@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import importlib
 import json
 import re
@@ -390,6 +391,34 @@ def _sanitize_case_name_value(value: str) -> str:
     return cleaned.strip("_")
 
 
+def _load_case_name_from_file(root_dir: Path) -> str:
+    case_name_path = root_dir / "case_name.txt"
+    if not case_name_path.exists():
+        return ""
+    try:
+        value = case_name_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return _sanitize_case_name_value(value)
+
+
+def _summary_output_paths(root_dir: Path) -> tuple[Path, Path]:
+    summaries_dir = root_dir / "summaries"
+    case_name = _load_case_name_from_file(root_dir)
+    if not case_name:
+        case_name, _ = load_case_context()
+        case_name = _sanitize_case_name_value(case_name)
+    if case_name:
+        return (
+            summaries_dir / f"sum_hearings_{case_name}.txt",
+            summaries_dir / f"sum_reports_{case_name}.txt",
+        )
+    return (
+        summaries_dir / "summarized_hearings.txt",
+        summaries_dir / "summarized_reports.txt",
+    )
+
+
 def _strip_nonstandard_characters(text: str) -> str:
     cleaned_chars: list[str] = []
     for ch in text:
@@ -636,46 +665,55 @@ def _write_manifest(root_dir: Path, selected_pdfs: list[Path]) -> None:
     summaries_dir = root_dir / "summaries"
     rag_dir = root_dir / "rag"
     temp_dir = root_dir / "temp"
+    summarized_hearings_path, summarized_reports_path = _summary_output_paths(root_dir)
 
-    def _path(value: Path) -> str:
+    def _root_path(value: Path) -> str:
         return str(value)
+
+    def _relpath(value: Path) -> str:
+        if not value.is_absolute():
+            return value.as_posix()
+        try:
+            return value.relative_to(root_dir).as_posix()
+        except ValueError:
+            return os.path.relpath(str(value), str(root_dir))
 
     payload: dict[str, Any] = {
         "schema_version": 1,
         "created_at": created_at,
         "updated_at": now,
-        "root_dir": _path(root_dir),
-        "input_pdfs": [_path(path) for path in selected_pdfs],
+        "root_dir": _root_path(root_dir),
+        "input_pdfs": [_relpath(path) for path in selected_pdfs],
         "dirs": {
-            "text_pages": _path(text_dir),
-            "image_pages": _path(image_pages_dir),
-            "classification": _path(classification_dir),
-            "artifacts": _path(artifacts_dir),
-            "summaries": _path(summaries_dir),
-            "rag": _path(rag_dir),
-            "temp": _path(temp_dir),
+            "text_pages": _relpath(text_dir),
+            "image_pages": _relpath(image_pages_dir),
+            "classification": _relpath(classification_dir),
+            "artifacts": _relpath(artifacts_dir),
+            "summaries": _relpath(summaries_dir),
+            "rag": _relpath(rag_dir),
+            "temp": _relpath(temp_dir),
         },
         "files": {
-            "merged_pdf": _path(temp_dir / "merged.pdf"),
-            "toc": _path(artifacts_dir / "toc.txt"),
-            "hearing_boundaries": _path(artifacts_dir / "hearing_boundaries.json"),
-            "report_boundaries": _path(artifacts_dir / "report_boundaries.json"),
-            "raw_hearings": _path(artifacts_dir / "raw_hearings.txt"),
-            "raw_reports": _path(artifacts_dir / "raw_reports.txt"),
-            "optimized_hearings": _path(artifacts_dir / "optimized_hearings.txt"),
-            "optimized_reports": _path(artifacts_dir / "optimized_reports.txt"),
-            "summarized_hearings": _path(summaries_dir / "summarized_hearings.txt"),
-            "summarized_reports": _path(summaries_dir / "summarized_reports.txt"),
-            "case_overview": _path(rag_dir / "case_overview.txt"),
+            "merged_pdf": _relpath(temp_dir / "merged.pdf"),
+            "toc": _relpath(artifacts_dir / "toc.txt"),
+            "hearing_boundaries": _relpath(artifacts_dir / "hearing_boundaries.json"),
+            "report_boundaries": _relpath(artifacts_dir / "report_boundaries.json"),
+            "raw_hearings": _relpath(artifacts_dir / "raw_hearings.txt"),
+            "raw_reports": _relpath(artifacts_dir / "raw_reports.txt"),
+            "optimized_hearings": _relpath(artifacts_dir / "optimized_hearings.txt"),
+            "optimized_reports": _relpath(artifacts_dir / "optimized_reports.txt"),
+            "summarized_hearings": _relpath(summarized_hearings_path),
+            "summarized_reports": _relpath(summarized_reports_path),
+            "case_overview": _relpath(rag_dir / "case_overview.txt"),
         },
         "classification": {
-            "basic": _path(classification_dir / "basic.jsonl"),
-            "dates": _path(classification_dir / "dates.jsonl"),
-            "report_names": _path(classification_dir / "report_names.jsonl"),
-            "form_names": _path(classification_dir / "form_names.jsonl"),
+            "basic": _relpath(classification_dir / "basic.jsonl"),
+            "dates": _relpath(classification_dir / "dates.jsonl"),
+            "report_names": _relpath(classification_dir / "report_names.jsonl"),
+            "form_names": _relpath(classification_dir / "form_names.jsonl"),
         },
         "rag": {
-            "vector_database": _path(rag_dir / "vector_database"),
+            "vector_database": _relpath(rag_dir / "vector_database"),
         },
     }
     manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1715,7 +1753,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         content.append(listbox)
 
         self.step_one_row = Adw.ActionRow(
-            title="1. Create files",
+            title="Create files",
             subtitle="Generate per-page text and image files for the selected PDFs.",
         )
         self.step_one_row.set_activatable(True)
@@ -1723,7 +1761,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_one_row)
 
         self.step_strip_nonstandard_row = Adw.ActionRow(
-            title="2. Strip characters",
+            title="Strip characters",
             subtitle="Remove non-printing characters from the extracted text files.",
         )
         self.step_strip_nonstandard_row.set_activatable(True)
@@ -1731,7 +1769,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_strip_nonstandard_row)
 
         self.step_infer_case_row = Adw.ActionRow(
-            title="3. Infer case",
+            title="Infer case",
             subtitle="Use the first pages to infer the case name and save it.",
         )
         self.step_infer_case_row.set_activatable(True)
@@ -1739,7 +1777,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_infer_case_row)
 
         self.step_two_row = Adw.ActionRow(
-            title="4. Classify pages",
+            title="Classify pages",
             subtitle="Label each page by type, date, and form metadata.",
         )
         self.step_two_row.set_activatable(True)
@@ -1747,7 +1785,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_two_row)
 
         self.step_three_row = Adw.ActionRow(
-            title="5. Classify dates",
+            title="Classify dates",
             subtitle="Identify hearing and minute-order dates from the transcript.",
         )
         self.step_three_row.set_activatable(True)
@@ -1755,7 +1793,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_three_row)
 
         self.step_four_row = Adw.ActionRow(
-            title="6. Classify reports",
+            title="Classify reports",
             subtitle="Extract report titles from report sections.",
         )
         self.step_four_row.set_activatable(True)
@@ -1763,7 +1801,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_four_row)
 
         self.step_five_row = Adw.ActionRow(
-            title="7. Classify forms",
+            title="Classify forms",
             subtitle="Extract form names from form pages.",
         )
         self.step_five_row.set_activatable(True)
@@ -1771,7 +1809,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_five_row)
 
         self.step_six_row = Adw.ActionRow(
-            title="8. Build TOC",
+            title="Build TOC",
             subtitle="Compile a table of contents for forms, reports, orders, and hearings.",
         )
         self.step_six_row.set_activatable(True)
@@ -1779,7 +1817,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_six_row)
 
         self.step_seven_row = Adw.ActionRow(
-            title="9. Find boundaries",
+            title="Find boundaries",
             subtitle="Determine page ranges for hearing and report sections.",
         )
         self.step_seven_row.set_activatable(True)
@@ -1787,7 +1825,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_seven_row)
 
         self.step_eight_row = Adw.ActionRow(
-            title="10. Create raw",
+            title="Create raw",
             subtitle="Create raw hearing and report text files for summarization.",
         )
         self.step_eight_row.set_activatable(True)
@@ -1795,7 +1833,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_eight_row)
 
         self.step_nine_row = Adw.ActionRow(
-            title="11. Create optimized",
+            title="Create optimized",
             subtitle="Prepare optimized hearing and report text for retrieval.",
         )
         self.step_nine_row.set_activatable(True)
@@ -1803,7 +1841,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_nine_row)
 
         self.step_ten_row = Adw.ActionRow(
-            title="12. Create summaries",
+            title="Create summaries",
             subtitle="Summarize optimized hearings and reports into concise paragraphs.",
         )
         self.step_ten_row.set_activatable(True)
@@ -1811,7 +1849,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_ten_row)
 
         self.step_eleven_row = Adw.ActionRow(
-            title="13. Case overview",
+            title="Case overview",
             subtitle="Create a three-paragraph overview for RAG context.",
         )
         self.step_eleven_row.set_activatable(True)
@@ -1819,7 +1857,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         listbox.append(self.step_eleven_row)
 
         self.step_twelve_row = Adw.ActionRow(
-            title="14. Create RAG index",
+            title="Create RAG index",
             subtitle="Build a VoyageAI/Chroma vector store from optimized text.",
         )
         self.step_twelve_row.set_activatable(True)
@@ -1983,10 +2021,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             _generate_text_files(pdf_path, text_dir)
             _generate_image_page_files(pdf_path, image_pages_dir)
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Step 1 failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Create files failed: {exc}")
         else:
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Step 1 complete.")
+            GLib.idle_add(self.show_toast, "Create files complete.")
         finally:
             GLib.idle_add(self.step_one_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
@@ -2000,7 +2038,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             root_dir = base_dir / "record_prep"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
-                raise FileNotFoundError("Run Step 1 to generate text files first.")
+                raise FileNotFoundError("Run Create files to generate text files first.")
             text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)
             if not text_files:
                 raise FileNotFoundError("No text files found to sanitize.")
@@ -2027,7 +2065,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             root_dir = base_dir / "record_prep"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
-                raise FileNotFoundError("Run Step 1 to generate text files first.")
+                raise FileNotFoundError("Run Create files to generate text files first.")
             settings = load_case_name_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure case name API URL, model ID, and API key in Settings.")
@@ -2152,7 +2190,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             root_dir = base_dir / "record_prep"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
-                raise FileNotFoundError("Run Step 1 to generate text files first.")
+                raise FileNotFoundError("Run Create files to generate text files first.")
             settings = load_classifier_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure classifier API URL, model ID, and API key in Settings.")
@@ -2170,10 +2208,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     handle.write(json.dumps(entry))
                     handle.write("\n")
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Step 2 failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Classify pages failed: {exc}")
         else:
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Step 2 complete.")
+            GLib.idle_add(self.show_toast, "Classify pages complete.")
         finally:
             GLib.idle_add(self.step_two_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
@@ -2187,11 +2225,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             root_dir = base_dir / "record_prep"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
-                raise FileNotFoundError("Run Step 1 to generate text files first.")
+                raise FileNotFoundError("Run Create files to generate text files first.")
             classification_dir = root_dir / "classification"
             classify_basic_path = classification_dir / "basic.jsonl"
             if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Step 2 to generate basic.jsonl first.")
+                raise FileNotFoundError("Run Classify pages to generate basic.jsonl first.")
             settings = load_classify_dates_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure classify dates API URL, model ID, and API key in Settings.")
@@ -2217,10 +2255,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     handle.write(json.dumps(ordered_entry))
                     handle.write("\n")
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Step 3 failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Classify dates failed: {exc}")
         else:
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Step 3 complete.")
+            GLib.idle_add(self.show_toast, "Classify dates complete.")
         finally:
             GLib.idle_add(self.step_three_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
@@ -2234,11 +2272,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             root_dir = base_dir / "record_prep"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
-                raise FileNotFoundError("Run Step 1 to generate text files first.")
+                raise FileNotFoundError("Run Create files to generate text files first.")
             classification_dir = root_dir / "classification"
             classify_basic_path = classification_dir / "basic.jsonl"
             if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Step 2 to generate basic.jsonl first.")
+                raise FileNotFoundError("Run Classify pages to generate basic.jsonl first.")
             settings = load_classify_report_names_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure report names API URL, model ID, and API key in Settings.")
@@ -2264,10 +2302,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     handle.write(json.dumps(ordered_entry))
                     handle.write("\n")
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Step 4 failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Classify reports failed: {exc}")
         else:
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Step 4 complete.")
+            GLib.idle_add(self.show_toast, "Classify reports complete.")
         finally:
             GLib.idle_add(self.step_four_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
@@ -2281,11 +2319,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             root_dir = base_dir / "record_prep"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
-                raise FileNotFoundError("Run Step 1 to generate text files first.")
+                raise FileNotFoundError("Run Create files to generate text files first.")
             classification_dir = root_dir / "classification"
             classify_basic_path = classification_dir / "basic.jsonl"
             if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Step 2 to generate basic.jsonl first.")
+                raise FileNotFoundError("Run Classify pages to generate basic.jsonl first.")
             settings = load_classify_form_names_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure form names API URL, model ID, and API key in Settings.")
@@ -2311,10 +2349,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     handle.write(json.dumps(ordered_entry))
                     handle.write("\n")
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Step 5 failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Classify forms failed: {exc}")
         else:
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Step 5 complete.")
+            GLib.idle_add(self.show_toast, "Classify forms complete.")
         finally:
             GLib.idle_add(self.step_five_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
@@ -2339,7 +2377,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 classify_form_names_path,
             ):
                 if not path.exists():
-                    raise FileNotFoundError("Run Steps 2-5 to generate classify JSONL files first.")
+                    raise FileNotFoundError("Run the classification steps to generate classify JSONL files first.")
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_entries = _load_jsonl_entries(classify_dates_path)
             basic_entries = _load_jsonl_entries(classify_basic_path)
@@ -2401,10 +2439,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             toc_path = derived_dir / "toc.txt"
             toc_path.write_text("\n".join(toc_lines).rstrip() + "\n", encoding="utf-8")
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Step 6 failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Build TOC failed: {exc}")
         else:
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Step 6 complete.")
+            GLib.idle_add(self.show_toast, "Build TOC complete.")
         finally:
             GLib.idle_add(self.step_six_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
@@ -2423,7 +2461,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             classify_report_names_path = classification_dir / "report_names.jsonl"
             for path in (classify_basic_path, classify_dates_path, classify_report_names_path):
                 if not path.exists():
-                    raise FileNotFoundError("Run Steps 2-4 to generate classify JSONL files first.")
+                    raise FileNotFoundError("Run the classification steps to generate classify JSONL files first.")
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_by_file: dict[str, str] = {}
             for entry in _load_jsonl_entries(classify_dates_path):
@@ -2505,10 +2543,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 encoding="utf-8",
             )
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Step 7 failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Find boundaries failed: {exc}")
         else:
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Step 7 complete.")
+            GLib.idle_add(self.show_toast, "Find boundaries complete.")
         finally:
             GLib.idle_add(self.step_seven_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
@@ -2523,11 +2561,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             derived_dir = root_dir / "artifacts"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
-                raise FileNotFoundError("Run Step 1 to generate text files first.")
+                raise FileNotFoundError("Run Create files to generate text files first.")
             hearing_path = derived_dir / "hearing_boundaries.json"
             report_path = derived_dir / "report_boundaries.json"
             if not hearing_path.exists() or not report_path.exists():
-                raise FileNotFoundError("Run Step 7 to generate boundary JSON files first.")
+                raise FileNotFoundError("Run Find boundaries to generate boundary JSON files first.")
             artifacts_dir = root_dir / "artifacts"
             artifacts_dir.mkdir(parents=True, exist_ok=True)
             hearing_entries = _load_json_entries(hearing_path)
@@ -2543,10 +2581,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             (artifacts_dir / "raw_hearings.txt").write_text(raw_hearings, encoding="utf-8")
             (artifacts_dir / "raw_reports.txt").write_text(raw_reports, encoding="utf-8")
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Step 8 failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Create raw failed: {exc}")
         else:
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Step 8 complete.")
+            GLib.idle_add(self.show_toast, "Create raw complete.")
         finally:
             GLib.idle_add(self.step_eight_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
@@ -2562,7 +2600,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             raw_hearings_path = artifacts_dir / "raw_hearings.txt"
             raw_reports_path = artifacts_dir / "raw_reports.txt"
             if not raw_hearings_path.exists() or not raw_reports_path.exists():
-                raise FileNotFoundError("Run Step 8 to generate raw hearing/report files first.")
+                raise FileNotFoundError("Run Create raw to generate raw hearing/report files first.")
             settings = load_optimize_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure optimize API URL, model ID, and API key in Settings.")
@@ -2637,10 +2675,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 encoding="utf-8",
             )
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Step 9 failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Create optimized failed: {exc}")
         else:
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Step 9 complete.")
+            GLib.idle_add(self.show_toast, "Create optimized complete.")
         finally:
             GLib.idle_add(self.step_nine_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
@@ -2654,10 +2692,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             root_dir = base_dir / "record_prep"
             artifacts_dir = root_dir / "artifacts"
             summaries_dir = root_dir / "summaries"
+            summaries_path, reports_path = _summary_output_paths(root_dir)
             optimized_hearings_path = artifacts_dir / "optimized_hearings.txt"
             optimized_reports_path = artifacts_dir / "optimized_reports.txt"
             if not optimized_hearings_path.exists() or not optimized_reports_path.exists():
-                raise FileNotFoundError("Run Step 9 to generate optimized files first.")
+                raise FileNotFoundError("Run Create optimized to generate optimized files first.")
             settings = load_summarize_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure summarize API URL, model ID, and API key in Settings.")
@@ -2744,19 +2783,19 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     summary_reports.append("")
 
             summaries_dir.mkdir(parents=True, exist_ok=True)
-            (summaries_dir / "summarized_hearings.txt").write_text(
+            summaries_path.write_text(
                 _collapse_blank_lines("\n".join(summary_hearings)),
                 encoding="utf-8",
             )
-            (summaries_dir / "summarized_reports.txt").write_text(
+            reports_path.write_text(
                 _collapse_blank_lines("\n".join(summary_reports)),
                 encoding="utf-8",
             )
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Step 10 failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Create summaries failed: {exc}")
         else:
             self._safe_update_manifest(root_dir)
-            GLib.idle_add(self.show_toast, "Step 10 complete.")
+            GLib.idle_add(self.show_toast, "Create summaries complete.")
         finally:
             GLib.idle_add(self.step_ten_row.set_sensitive, True)
             GLib.idle_add(self._stop_status)
@@ -2769,10 +2808,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
             summaries_dir = root_dir / "summaries"
-            summaries_path = summaries_dir / "summarized_hearings.txt"
-            reports_path = summaries_dir / "summarized_reports.txt"
+            summaries_path, reports_path = _summary_output_paths(root_dir)
             if not summaries_path.exists() or not reports_path.exists():
-                raise FileNotFoundError("Run Step 10 to generate summarized files first.")
+                raise FileNotFoundError("Run Create summaries to generate summarized files first.")
             settings = load_overview_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError("Configure overview API URL, model ID, and API key in Settings.")
@@ -2821,10 +2859,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             base_dir = parents.pop()
             root_dir = base_dir / "record_prep"
             summaries_dir = root_dir / "summaries"
-            summaries_path = summaries_dir / "summarized_hearings.txt"
-            reports_path = summaries_dir / "summarized_reports.txt"
+            summaries_path, reports_path = _summary_output_paths(root_dir)
             if not summaries_path.exists() or not reports_path.exists():
-                raise FileNotFoundError("Run Step 10 to generate summarized files first.")
+                raise FileNotFoundError("Run Create summaries to generate summarized files first.")
             settings = load_rag_settings()
             if not settings["voyage_api_key"] or not settings["voyage_model"]:
                 raise ValueError("Configure Voyage credentials in Settings.")
@@ -2864,14 +2901,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 documents.append(
                     Document(
                         page_content=paragraph,
-                        metadata={"source": "summarized_hearings.txt"},
+                        metadata={"source": summaries_path.name},
                     )
                 )
             for paragraph in _split_paragraphs(report_text):
                 documents.append(
                     Document(
                         page_content=paragraph,
-                        metadata={"source": "summarized_reports.txt"},
+                        metadata={"source": reports_path.name},
                     )
                 )
             if not documents:
