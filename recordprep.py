@@ -1750,7 +1750,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         content.append(self.selected_label)
 
         self.run_all_button = Gtk.Button(label="Run all steps")
-        self.run_all_button.add_css_class("suggested-action")
         self.run_all_button.set_halign(Gtk.Align.START)
         self.run_all_button.connect("clicked", self.on_run_all_clicked)
         content.append(self.run_all_button)
