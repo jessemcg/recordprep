@@ -5,8 +5,10 @@ import datetime
 import os
 import importlib
 import json
+import random
 import re
 import threading
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -28,6 +30,11 @@ APPLICATION_ID = "com.mcglaw.RecordPrep"
 APPLICATION_NAME = "Record Prep"
 
 GLib.set_application_name(APPLICATION_NAME)
+
+LLM_MAX_RETRIES = 5
+LLM_RETRY_BASE_SECONDS = 1.0
+LLM_RETRY_MAX_SECONDS = 30.0
+LLM_RETRYABLE_HTTP_CODES = {408, 409, 429, 500, 502, 503, 504}
 
 CONFIG_FILE = Path(__file__).with_name("config.json")
 CONFIG_KEY_CLASSIFIER_API_URL = "classifier_api_url"
@@ -335,6 +342,50 @@ def _load_jsonl_entries(path: Path) -> list[dict[str, Any]]:
             if isinstance(payload, dict):
                 entries.append(payload)
     return entries
+
+
+def _load_jsonl_file_names(path: Path) -> set[str]:
+    entries = _load_jsonl_entries(path)
+    file_names: set[str] = set()
+    for entry in entries:
+        file_name = _extract_entry_value(entry, "file_name", "filename")
+        if file_name:
+            file_names.add(file_name)
+    return file_names
+
+
+def _load_indexed_jsonl(path: Path) -> dict[int, str]:
+    entries: dict[int, str] = {}
+    if not path.exists():
+        return entries
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            index_value = payload.get("index")
+            try:
+                index = int(index_value)
+            except (TypeError, ValueError):
+                continue
+            text = payload.get("text")
+            entries[index] = str(text) if text is not None else ""
+    return entries
+
+
+def _append_indexed_jsonl(path: Path, index: int, text: str, label: str | None = None) -> None:
+    payload: dict[str, Any] = {"index": index, "text": text}
+    if label:
+        payload["label"] = label
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload))
+        handle.write("\n")
 
 
 def _load_json_entries(path: Path) -> list[dict[str, Any]]:
@@ -666,6 +717,66 @@ def _ensure_case_bundle_dirs(base_dir: Path) -> tuple[Path, Path, Path]:
     text_dir.mkdir(parents=True, exist_ok=True)
     image_pages_dir.mkdir(parents=True, exist_ok=True)
     return root, text_dir, image_pages_dir
+
+
+def _checkpoint_dir(root_dir: Path) -> Path:
+    path = root_dir / "checkpoints"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _retry_after_seconds(error: urllib.error.HTTPError) -> float | None:
+    if not error.headers:
+        return None
+    retry_after = error.headers.get("Retry-After")
+    if not retry_after:
+        return None
+    try:
+        return float(retry_after)
+    except ValueError:
+        return None
+
+
+def _retry_delay_seconds(attempt: int, retry_after: float | None) -> float:
+    if retry_after is not None:
+        return max(0.0, retry_after)
+    base = min(LLM_RETRY_MAX_SECONDS, LLM_RETRY_BASE_SECONDS * (2 ** (attempt - 1)))
+    jitter = random.uniform(0.0, base * 0.2)
+    return base + jitter
+
+
+def _post_json_with_retries(
+    req: urllib.request.Request,
+    timeout: int,
+    error_label: str,
+) -> dict[str, Any]:
+    for attempt in range(1, LLM_MAX_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            if isinstance(payload, dict):
+                return payload
+            raise RuntimeError(f"{error_label}: response was not JSON")
+        except urllib.error.HTTPError as exc:
+            retry_after = _retry_after_seconds(exc)
+            if exc.code in LLM_RETRYABLE_HTTP_CODES and attempt < LLM_MAX_RETRIES:
+                time.sleep(_retry_delay_seconds(attempt, retry_after))
+                continue
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                error_body = ""
+            detail = error_body.strip() or exc.reason or "request failed"
+            raise RuntimeError(f"{error_label}: HTTP {exc.code} {detail}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt < LLM_MAX_RETRIES:
+                time.sleep(_retry_delay_seconds(attempt, None))
+                continue
+            raise RuntimeError(f"{error_label}: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"{error_label}: {exc}") from exc
+    raise RuntimeError(f"{error_label}: exhausted retries")
 
 
 def _manifest_path(root_dir: Path) -> Path:
@@ -2387,7 +2498,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             classification_dir = root_dir / "classification"
             classification_dir.mkdir(parents=True, exist_ok=True)
             classify_basic_path = classification_dir / "basic.jsonl"
-            classify_basic_path.write_text("", encoding="utf-8")
+            classify_basic_path.touch(exist_ok=True)
+            done_basic = _load_jsonl_file_names(classify_basic_path)
             text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)
             if not text_files:
                 raise FileNotFoundError("No text files found to classify.")
@@ -2398,14 +2510,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 "prompt": shared_settings["prompt"],
             }
             for text_path in text_files:
+                if text_path.name in done_basic:
+                    continue
                 content = text_path.read_text(encoding="utf-8", errors="ignore")
                 entry = self._classify_text(basic_settings, text_path.name, content)
                 with classify_basic_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(entry))
                     handle.write("\n")
+                done_basic.add(text_path.name)
 
             classify_dates_path = classification_dir / "dates.jsonl"
-            classify_dates_path.write_text("", encoding="utf-8")
+            classify_dates_path.touch(exist_ok=True)
+            done_dates = _load_jsonl_file_names(classify_dates_path)
             dates_settings = load_classify_dates_settings()
             date_targets = _load_classify_date_targets(classify_basic_path)
             if date_targets:
@@ -2416,6 +2532,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "prompt": dates_settings["prompt"],
                 }
                 for file_name, _page_type in date_targets:
+                    if file_name in done_dates:
+                        continue
                     text_path = text_dir / file_name
                     if not text_path.exists():
                         raise FileNotFoundError(
@@ -2431,9 +2549,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     with classify_dates_path.open("a", encoding="utf-8") as handle:
                         handle.write(json.dumps(ordered_entry))
                         handle.write("\n")
+                    done_dates.add(file_name)
 
             classify_report_names_path = classification_dir / "report_names.jsonl"
-            classify_report_names_path.write_text("", encoding="utf-8")
+            classify_report_names_path.touch(exist_ok=True)
+            done_reports = _load_jsonl_file_names(classify_report_names_path)
             report_settings = load_classify_report_names_settings()
             report_targets = _load_classify_report_targets(classify_basic_path)
             if report_targets:
@@ -2444,6 +2564,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "prompt": report_settings["prompt"],
                 }
                 for file_name, _page_type in report_targets:
+                    if file_name in done_reports:
+                        continue
                     text_path = text_dir / file_name
                     if not text_path.exists():
                         raise FileNotFoundError(
@@ -2459,9 +2581,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     with classify_report_names_path.open("a", encoding="utf-8") as handle:
                         handle.write(json.dumps(ordered_entry))
                         handle.write("\n")
+                    done_reports.add(file_name)
 
             classify_form_names_path = classification_dir / "form_names.jsonl"
-            classify_form_names_path.write_text("", encoding="utf-8")
+            classify_form_names_path.touch(exist_ok=True)
+            done_forms = _load_jsonl_file_names(classify_form_names_path)
             form_settings = load_classify_form_names_settings()
             form_targets = _load_classify_form_targets(classify_basic_path)
             if form_targets:
@@ -2472,6 +2596,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "prompt": form_settings["prompt"],
                 }
                 for file_name, _page_type in form_targets:
+                    if file_name in done_forms:
+                        continue
                     text_path = text_dir / file_name
                     if not text_path.exists():
                         raise FileNotFoundError(
@@ -2487,6 +2613,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     with classify_form_names_path.open("a", encoding="utf-8") as handle:
                         handle.write(json.dumps(ordered_entry))
                         handle.write("\n")
+                    done_forms.add(file_name)
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Classify failed: {exc}")
         else:
@@ -2773,25 +2900,43 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not hearing_sections and not report_sections:
                 raise FileNotFoundError("No hearing/report sections found in raw files.")
 
+            checkpoint_dir = _checkpoint_dir(root_dir)
+            hearing_checkpoint_path = checkpoint_dir / "optimize_hearings.jsonl"
+            report_checkpoint_path = checkpoint_dir / "optimize_reports.jsonl"
+            hearing_checkpoint = _load_indexed_jsonl(hearing_checkpoint_path)
+            report_checkpoint = _load_indexed_jsonl(report_checkpoint_path)
+
             optimized_hearings: list[str] = []
+            hearing_index = 0
             for label, content in hearing_sections:
                 if not content:
                     continue
                 sentences = _split_into_sentences(content)
                 if not sentences:
                     continue
-                attorney_excerpt = _chunk_sentences(sentences, 2000)[0]
-                attorney_info = self._request_plain_text(
-                    {
-                        "api_url": settings["api_url"],
-                        "model_id": settings["model_id"],
-                        "api_key": settings["api_key"],
-                        "prompt": attorneys_prompt,
-                    },
-                    attorney_excerpt,
-                )
                 chunks = _chunk_sentences(sentences, 3500)
-                for chunk in chunks:
+                if not chunks:
+                    continue
+                needs_work = any(
+                    (hearing_index + offset) not in hearing_checkpoint
+                    for offset in range(len(chunks))
+                )
+                attorney_info = ""
+                if needs_work:
+                    attorney_excerpt = _chunk_sentences(sentences, 2000)[0]
+                    attorney_info = self._request_plain_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": attorneys_prompt,
+                        },
+                        attorney_excerpt,
+                    )
+                for offset, chunk in enumerate(chunks):
+                    index = hearing_index + offset
+                    if index in hearing_checkpoint:
+                        continue
                     payload = f"Hearing date: {label}\nAttorney info: {attorney_info}\nTranscript:\n{chunk}"
                     response = self._request_plain_text(
                         {
@@ -2802,18 +2947,31 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         },
                         payload,
                     )
-                    if response:
-                        optimized_hearings.append(response.strip())
+                    cleaned_response = response.strip() if response else ""
+                    hearing_checkpoint[index] = cleaned_response
+                    _append_indexed_jsonl(hearing_checkpoint_path, index, cleaned_response, label=label)
+                hearing_index += len(chunks)
+
+            for index in range(hearing_index):
+                response_text = hearing_checkpoint.get(index, "")
+                if response_text:
+                    optimized_hearings.append(response_text)
 
             optimized_reports: list[str] = []
-            for _label, content in report_sections:
+            report_index = 0
+            for label, content in report_sections:
                 if not content:
                     continue
                 sentences = _split_into_sentences(content)
                 if not sentences:
                     continue
                 chunks = _chunk_sentences(sentences, 3500)
-                for chunk in chunks:
+                if not chunks:
+                    continue
+                for offset, chunk in enumerate(chunks):
+                    index = report_index + offset
+                    if index in report_checkpoint:
+                        continue
                     response = self._request_plain_text(
                         {
                             "api_url": settings["api_url"],
@@ -2823,8 +2981,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         },
                         chunk,
                     )
-                    if response:
-                        optimized_reports.append(response.strip())
+                    cleaned_response = response.strip() if response else ""
+                    report_checkpoint[index] = cleaned_response
+                    _append_indexed_jsonl(report_checkpoint_path, index, cleaned_response, label=label)
+                report_index += len(chunks)
+
+            for index in range(report_index):
+                response_text = report_checkpoint.get(index, "")
+                if response_text:
+                    optimized_reports.append(response_text)
 
             (artifacts_dir / "optimized_hearings.txt").write_text(
                 _collapse_blank_lines("\n\n".join(optimized_hearings)),
@@ -2878,6 +3043,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 except ValueError:
                     chunk_size = DEFAULT_SUMMARIZE_CHUNK_SIZE
 
+            checkpoint_dir = _checkpoint_dir(root_dir)
+            hearing_checkpoint_path = checkpoint_dir / "summarize_hearings.jsonl"
+            report_checkpoint_path = checkpoint_dir / "summarize_reports.jsonl"
+            minutes_checkpoint_path = checkpoint_dir / "summarize_minutes.jsonl"
+            hearing_checkpoint = _load_indexed_jsonl(hearing_checkpoint_path)
+            report_checkpoint = _load_indexed_jsonl(report_checkpoint_path)
+            minutes_checkpoint = _load_indexed_jsonl(minutes_checkpoint_path)
+
             case_name, _root_dir = load_case_context()
             display_case_name = case_name.replace("_", " ") if case_name else ""
             summary_hearings: list[str] = []
@@ -2906,14 +3079,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     _remove_standalone_date_lines(_remove_hearing_date_mentions(cleaned))
                 )
 
-            first_section = True
+            hearing_chunk_index = 0
             for date_value, paragraphs in hearing_groups:
-                if not first_section:
-                    summary_hearings.append("")
-                summary_hearings.append(date_value or "HEARING")
-                summary_hearings.append("")
-                first_section = False
                 for chunk in _chunk_paragraphs(paragraphs, chunk_size):
+                    if hearing_chunk_index in hearing_checkpoint:
+                        hearing_chunk_index += 1
+                        continue
                     response = self._request_plain_text(
                         {
                             "api_url": settings["api_url"],
@@ -2923,6 +3094,27 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         },
                         chunk,
                     )
+                    cleaned_response = response.strip() if response else ""
+                    hearing_checkpoint[hearing_chunk_index] = cleaned_response
+                    _append_indexed_jsonl(
+                        hearing_checkpoint_path,
+                        hearing_chunk_index,
+                        cleaned_response,
+                        label=date_value or "HEARING",
+                    )
+                    hearing_chunk_index += 1
+
+            first_section = True
+            hearing_chunk_index = 0
+            for date_value, paragraphs in hearing_groups:
+                if not first_section:
+                    summary_hearings.append("")
+                summary_hearings.append(date_value or "HEARING")
+                summary_hearings.append("")
+                first_section = False
+                for chunk in _chunk_paragraphs(paragraphs, chunk_size):
+                    response = hearing_checkpoint.get(hearing_chunk_index, "")
+                    hearing_chunk_index += 1
                     if response:
                         cleaned_response = _remove_hearing_date_mentions(response.strip())
                         summary_hearings.append(_remove_standalone_date_lines(cleaned_response))
@@ -2939,16 +3131,31 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             report_paragraphs = [
                 re.sub(r"^Reporting:\s*", "", paragraph) for paragraph in report_paragraphs
             ]
+            report_chunk_index = 0
             for chunk in _chunk_paragraphs(report_paragraphs, chunk_size):
-                response = self._request_plain_text(
-                    {
-                        "api_url": settings["api_url"],
-                        "model_id": settings["model_id"],
-                        "api_key": settings["api_key"],
-                        "prompt": settings["reports_prompt"],
-                    },
-                    chunk,
-                )
+                if report_chunk_index not in report_checkpoint:
+                    response = self._request_plain_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": settings["reports_prompt"],
+                        },
+                        chunk,
+                    )
+                    cleaned_response = response.strip() if response else ""
+                    report_checkpoint[report_chunk_index] = cleaned_response
+                    _append_indexed_jsonl(
+                        report_checkpoint_path,
+                        report_chunk_index,
+                        cleaned_response,
+                    )
+                report_chunk_index += 1
+
+            report_chunk_index = 0
+            for chunk in _chunk_paragraphs(report_paragraphs, chunk_size):
+                response = report_checkpoint.get(report_chunk_index, "")
+                report_chunk_index += 1
                 if response:
                     summary_reports.append(response.strip())
                     summary_reports.append("")
@@ -2960,6 +3167,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 minutes_outline.append("Minutes Summary")
 
             minute_entries = _load_json_entries(minutes_boundaries_path)
+            minutes_index = 0
             for entry in minute_entries:
                 date_value = _extract_entry_value(entry, "date").strip()
                 start_label = _extract_entry_value(entry, "start_page", "start", "starte_page").strip()
@@ -2979,23 +3187,32 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         raise FileNotFoundError(f"Missing text file {page_path.name}.")
                     page_texts.append(page_path.read_text(encoding="utf-8", errors="ignore"))
                 minutes_payload = "\n".join(page_texts).strip()
-                if minutes_payload:
-                    response = self._request_plain_text(
-                        {
-                            "api_url": settings["api_url"],
-                            "model_id": settings["model_id"],
-                            "api_key": settings["api_key"],
-                            "prompt": settings["minutes_prompt"],
-                        },
-                        minutes_payload,
+                response = minutes_checkpoint.get(minutes_index, "")
+                if minutes_index not in minutes_checkpoint:
+                    if minutes_payload:
+                        response = self._request_plain_text(
+                            {
+                                "api_url": settings["api_url"],
+                                "model_id": settings["model_id"],
+                                "api_key": settings["api_key"],
+                                "prompt": settings["minutes_prompt"],
+                            },
+                            minutes_payload,
+                        )
+                    response = response.strip() if response else ""
+                    minutes_checkpoint[minutes_index] = response
+                    _append_indexed_jsonl(
+                        minutes_checkpoint_path,
+                        minutes_index,
+                        response,
+                        label=date_value or "Minute Order",
                     )
-                    if response:
-                        minutes_outline.append(" ".join(response.split()))
-                    else:
-                        minutes_outline.append("")
+                if response:
+                    minutes_outline.append(" ".join(response.split()))
                 else:
                     minutes_outline.append("")
                 minutes_outline.append("")
+                minutes_index += 1
 
             summaries_dir.mkdir(parents=True, exist_ok=True)
             summaries_path.write_text(
@@ -3215,19 +3432,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         }
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(settings["api_url"], data=data, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
-        except urllib.error.HTTPError as exc:
-            error_body = ""
-            try:
-                error_body = exc.read().decode("utf-8", errors="ignore")
-            except Exception:
-                error_body = ""
-            detail = error_body.strip() or exc.reason or "request failed"
-            raise RuntimeError(f"Classifier request failed: HTTP {exc.code} {detail}") from exc
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Classifier request failed: {exc}") from exc
+        payload = _post_json_with_retries(req, timeout=300, error_label="Classifier request failed")
         response_text = self._extract_response_text(payload)
         try:
             parsed = json.loads(self._extract_json_payload(response_text))
@@ -3275,19 +3480,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         }
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(settings["api_url"], data=data, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
-        except urllib.error.HTTPError as exc:
-            error_body = ""
-            try:
-                error_body = exc.read().decode("utf-8", errors="ignore")
-            except Exception:
-                error_body = ""
-            detail = error_body.strip() or exc.reason or "request failed"
-            raise RuntimeError(f"Classifier request failed: HTTP {exc.code} {detail}") from exc
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Classifier request failed: {exc}") from exc
+        payload = _post_json_with_retries(req, timeout=300, error_label="Classifier request failed")
         return self._extract_response_text(payload).strip()
 
     def _extract_response_text(self, payload: Any) -> str:
