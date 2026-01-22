@@ -783,19 +783,30 @@ def _manifest_path(root_dir: Path) -> Path:
     return root_dir / "manifest.json"
 
 
-def _write_manifest(root_dir: Path, selected_pdfs: list[Path]) -> None:
+def _read_manifest(root_dir: Path) -> dict[str, Any]:
+    manifest_path = _manifest_path(root_dir)
+    if not manifest_path.exists():
+        return {}
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_manifest(
+    root_dir: Path,
+    selected_pdfs: list[Path],
+    pipeline_info: dict[str, Any] | None = None,
+) -> None:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     manifest_path = _manifest_path(root_dir)
+    existing = _read_manifest(root_dir)
     created_at = now
-    if manifest_path.exists():
-        try:
-            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            existing = {}
-        if isinstance(existing, dict):
-            existing_created = existing.get("created_at")
-            if isinstance(existing_created, str) and existing_created.strip():
-                created_at = existing_created
+    if isinstance(existing, dict):
+        existing_created = existing.get("created_at")
+        if isinstance(existing_created, str) and existing_created.strip():
+            created_at = existing_created
 
     text_dir = root_dir / "text_pages"
     image_pages_dir = root_dir / "image_pages"
@@ -817,6 +828,20 @@ def _write_manifest(root_dir: Path, selected_pdfs: list[Path]) -> None:
             return value.relative_to(root_dir).as_posix()
         except ValueError:
             return os.path.relpath(str(value), str(root_dir))
+
+    pipeline: dict[str, Any] = {}
+    if isinstance(existing.get("pipeline"), dict):
+        pipeline.update(existing["pipeline"])
+    if pipeline_info:
+        for key, value in pipeline_info.items():
+            if value is None:
+                pipeline.pop(key, None)
+            else:
+                pipeline[key] = value
+        if "last_completed_step" in pipeline_info and "last_completed_at" not in pipeline_info:
+            pipeline["last_completed_at"] = now
+        if "last_failed_step" in pipeline_info and "last_failed_at" not in pipeline_info:
+            pipeline["last_failed_at"] = now
 
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -857,6 +882,7 @@ def _write_manifest(root_dir: Path, selected_pdfs: list[Path]) -> None:
         "rag": {
             "vector_database": _relpath(rag_dir / "vector_database"),
         },
+        "pipeline": pipeline,
     }
     manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -2024,10 +2050,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.selected_label.add_css_class("dim-label")
         content.append(self.selected_label)
 
+        action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.run_all_button = Gtk.Button(label="Run all steps")
         self.run_all_button.set_halign(Gtk.Align.START)
         self.run_all_button.connect("clicked", self.on_run_all_clicked)
-        content.append(self.run_all_button)
+        action_box.append(self.run_all_button)
+
+        self.resume_button = Gtk.Button(label="Resume")
+        self.resume_button.set_halign(Gtk.Align.START)
+        self.resume_button.connect("clicked", self.on_resume_clicked)
+        action_box.append(self.resume_button)
+        content.append(action_box)
 
         self.step_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self.step_list.add_css_class("boxed-list")
@@ -2213,9 +2246,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self._pipeline_running:
             self._stop_status()
 
-    def _safe_update_manifest(self, root_dir: Path) -> None:
+    def _safe_update_manifest(
+        self, root_dir: Path, pipeline_info: dict[str, Any] | None = None
+    ) -> None:
         try:
-            _write_manifest(root_dir, self.selected_pdfs)
+            _write_manifest(root_dir, self.selected_pdfs, pipeline_info=pipeline_info)
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Manifest update failed: {exc}")
 
@@ -2274,6 +2309,45 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             display_name = case_name.replace("_", " ") if case_name else case_name
             self.selected_label.set_text(f"Selected: {display_name}")
 
+    def _pipeline_steps(self) -> list[tuple[str, Adw.ActionRow, Callable[[], bool]]]:
+        return [
+            ("create_files", self.step_one_row, self._run_step_one),
+            ("strip_characters", self.step_strip_nonstandard_row, self._run_step_strip_nonstandard),
+            ("infer_case", self.step_infer_case_row, self._run_step_infer_case),
+            ("classify", self.step_two_row, self._run_step_two),
+            ("build_toc", self.step_six_row, self._run_step_six),
+            ("find_boundaries", self.step_seven_row, self._run_step_seven),
+            ("create_raw", self.step_eight_row, self._run_step_eight),
+            ("create_optimized", self.step_nine_row, self._run_step_nine),
+            ("create_summaries", self.step_ten_row, self._run_step_ten),
+            ("case_overview", self.step_eleven_row, self._run_step_eleven),
+            ("create_rag_index", self.step_twelve_row, self._run_step_twelve),
+        ]
+
+    def _resolve_case_root(self) -> Path | None:
+        parents = {path.parent for path in self.selected_pdfs}
+        if len(parents) != 1:
+            return None
+        base_dir = parents.pop()
+        return base_dir / "case_bundle"
+
+    def _resume_start_index(
+        self,
+        steps: list[tuple[str, Adw.ActionRow, Callable[[], bool]]],
+        root_dir: Path,
+    ) -> int:
+        manifest = _read_manifest(root_dir)
+        pipeline = manifest.get("pipeline") if isinstance(manifest, dict) else None
+        pipeline = pipeline if isinstance(pipeline, dict) else {}
+        last_failed = pipeline.get("last_failed_step")
+        last_completed = pipeline.get("last_completed_step")
+        step_ids = [step_id for step_id, _row, _handler in steps]
+        if isinstance(last_failed, str) and last_failed in step_ids:
+            return step_ids.index(last_failed)
+        if isinstance(last_completed, str) and last_completed in step_ids:
+            return step_ids.index(last_completed) + 1
+        return 0
+
     def on_run_all_clicked(self, _button: Gtk.Button) -> None:
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
@@ -2283,8 +2357,37 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self._pipeline_running = True
         self.run_all_button.set_sensitive(False)
+        self.resume_button.set_sensitive(False)
         self.step_list.set_sensitive(False)
         threading.Thread(target=self._run_all_steps, daemon=True).start()
+
+    def on_resume_clicked(self, _button: Gtk.Button) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        if self._pipeline_running:
+            self.show_toast("Pipeline already running.")
+            return
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            self.show_toast("Selected PDFs must be in the same folder.")
+            return
+        steps = self._pipeline_steps()
+        start_index = self._resume_start_index(steps, root_dir)
+        if start_index >= len(steps):
+            self.show_toast("All steps already complete.")
+            return
+        for _step_id, row, _handler in steps[:start_index]:
+            self._set_step_status(row, "Done")
+        self._pipeline_running = True
+        self.run_all_button.set_sensitive(False)
+        self.resume_button.set_sensitive(False)
+        self.step_list.set_sensitive(False)
+        threading.Thread(
+            target=self._run_steps_from_index,
+            args=(start_index, root_dir),
+            daemon=True,
+        ).start()
 
     def on_step_one_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
@@ -2331,7 +2434,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Create files failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "create_files",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Create files complete.")
         finally:
             GLib.idle_add(self.step_one_row.set_sensitive, True)
@@ -2362,7 +2472,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Strip non-standard characters failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "strip_characters",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Strip non-standard characters complete.")
         finally:
             GLib.idle_add(self.step_strip_nonstandard_row.set_sensitive, True)
@@ -2404,7 +2521,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Infer case name failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "infer_case",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Infer case name complete.")
         finally:
             GLib.idle_add(self.step_infer_case_row.set_sensitive, True)
@@ -2477,35 +2601,36 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_twelve, daemon=True).start()
 
     def _run_all_steps(self) -> None:
-        steps: list[tuple[Adw.ActionRow, Callable[[], bool]]] = [
-            (self.step_one_row, self._run_step_one),
-            (self.step_strip_nonstandard_row, self._run_step_strip_nonstandard),
-            (self.step_infer_case_row, self._run_step_infer_case),
-            (self.step_two_row, self._run_step_two),
-            (self.step_six_row, self._run_step_six),
-            (self.step_seven_row, self._run_step_seven),
-            (self.step_eight_row, self._run_step_eight),
-            (self.step_nine_row, self._run_step_nine),
-            (self.step_ten_row, self._run_step_ten),
-            (self.step_eleven_row, self._run_step_eleven),
-            (self.step_twelve_row, self._run_step_twelve),
-        ]
+        root_dir = self._resolve_case_root()
+        self._run_steps_from_index(0, root_dir)
+
+    def _run_steps_from_index(self, start_index: int, root_dir: Path | None) -> None:
+        steps = self._pipeline_steps()
         success = True
+        failed_step_id: str | None = None
+        current_step_id: str | None = None
         try:
-            for row, handler in steps:
+            for step_id, row, handler in steps[start_index:]:
+                current_step_id = step_id
                 GLib.idle_add(self._start_step, row)
                 if not handler():
                     success = False
+                    failed_step_id = step_id
                     break
         except Exception as exc:
             success = False
+            if current_step_id and not failed_step_id:
+                failed_step_id = current_step_id
             GLib.idle_add(self.show_toast, f"Pipeline failed: {exc}")
         finally:
+            if failed_step_id and root_dir and root_dir.exists():
+                self._safe_update_manifest(root_dir, {"last_failed_step": failed_step_id})
             GLib.idle_add(self._finish_run_all, success)
 
     def _finish_run_all(self, success: bool) -> None:
         self._pipeline_running = False
         self.run_all_button.set_sensitive(True)
+        self.resume_button.set_sensitive(True)
         self.step_list.set_sensitive(True)
         self._stop_status()
         if success:
@@ -2654,7 +2779,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Classify failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "classify",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Classify complete.")
         finally:
             GLib.idle_add(self.step_two_row.set_sensitive, True)
@@ -2748,7 +2880,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Build TOC failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "build_toc",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Build TOC complete.")
         finally:
             GLib.idle_add(self.step_six_row.set_sensitive, True)
@@ -2865,7 +3004,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Find boundaries failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "find_boundaries",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Find boundaries complete.")
         finally:
             GLib.idle_add(self.step_seven_row.set_sensitive, True)
@@ -2907,7 +3053,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Create raw failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "create_raw",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Create raw complete.")
         finally:
             GLib.idle_add(self.step_eight_row.set_sensitive, True)
@@ -3043,7 +3196,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Create optimized failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "create_optimized",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Create optimized complete.")
         finally:
             GLib.idle_add(self.step_nine_row.set_sensitive, True)
@@ -3272,7 +3432,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Create summaries failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "create_summaries",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Create summaries complete.")
         finally:
             GLib.idle_add(self.step_ten_row.set_sensitive, True)
@@ -3327,7 +3494,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Case overview failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "case_overview",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Case overview complete.")
         finally:
             GLib.idle_add(self.step_eleven_row.set_sensitive, True)
@@ -3404,7 +3578,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Create RAG index failed: {exc}")
         else:
             success = True
-            self._safe_update_manifest(root_dir)
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "create_rag_index",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
             GLib.idle_add(self.show_toast, "Create RAG index complete.")
         finally:
             GLib.idle_add(self.step_twelve_row.set_sensitive, True)
