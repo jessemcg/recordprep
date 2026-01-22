@@ -659,8 +659,8 @@ def _merge_pdfs(paths: list[Path], output_path: Path) -> Path:
     return output_path
 
 
-def _ensure_record_prep_dirs(base_dir: Path) -> tuple[Path, Path, Path]:
-    root = base_dir / "record_prep"
+def _ensure_case_bundle_dirs(base_dir: Path) -> tuple[Path, Path, Path]:
+    root = base_dir / "case_bundle"
     text_dir = root / "text_pages"
     image_pages_dir = root / "image_pages"
     text_dir.mkdir(parents=True, exist_ok=True)
@@ -2173,7 +2173,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir, text_dir, image_pages_dir = _ensure_record_prep_dirs(base_dir)
+            root_dir, text_dir, image_pages_dir = _ensure_case_bundle_dirs(base_dir)
             if len(self.selected_pdfs) > 1:
                 temp_dir = root_dir / "temp"
                 temp_dir.mkdir(parents=True, exist_ok=True)
@@ -2201,7 +2201,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
+            root_dir = base_dir / "case_bundle"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
@@ -2231,7 +2231,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
+            root_dir = base_dir / "case_bundle"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
@@ -2373,7 +2373,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
+            root_dir = base_dir / "case_bundle"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
@@ -2505,7 +2505,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
+            root_dir = base_dir / "case_bundle"
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
             classify_basic_path = classification_dir / "basic.jsonl"
@@ -2598,7 +2598,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
+            root_dir = base_dir / "case_bundle"
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
             classify_basic_path = classification_dir / "basic.jsonl"
@@ -2714,7 +2714,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
+            root_dir = base_dir / "case_bundle"
             derived_dir = root_dir / "artifacts"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
@@ -2755,7 +2755,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
+            root_dir = base_dir / "case_bundle"
             artifacts_dir = root_dir / "artifacts"
             raw_hearings_path = artifacts_dir / "raw_hearings.txt"
             raw_reports_path = artifacts_dir / "raw_reports.txt"
@@ -2852,7 +2852,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
+            root_dir = base_dir / "case_bundle"
             artifacts_dir = root_dir / "artifacts"
             summaries_dir = root_dir / "summaries"
             summaries_path, reports_path = _summary_output_paths(root_dir)
@@ -3028,7 +3028,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
+            root_dir = base_dir / "case_bundle"
             summaries_dir = root_dir / "summaries"
             summaries_path, reports_path = _summary_output_paths(root_dir)
             if not summaries_path.exists() or not reports_path.exists():
@@ -3082,7 +3082,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
             base_dir = parents.pop()
-            root_dir = base_dir / "record_prep"
+            root_dir = base_dir / "case_bundle"
             summaries_dir = root_dir / "summaries"
             summaries_path, reports_path = _summary_output_paths(root_dir)
             if not summaries_path.exists() or not reports_path.exists():
