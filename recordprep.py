@@ -1987,6 +1987,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.selected_pdfs: list[Path] = []
         self._settings_window: SettingsWindow | None = None
         self._pipeline_running = False
+        self._step_status_labels: dict[Adw.ActionRow, Gtk.Label] = {}
 
         header_bar = Adw.HeaderBar()
 
@@ -2038,6 +2039,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_one_row.set_activatable(True)
         self.step_one_row.connect("activated", self.on_step_one_clicked)
+        self._attach_step_status(self.step_one_row)
         self.step_list.append(self.step_one_row)
 
         self.step_strip_nonstandard_row = Adw.ActionRow(
@@ -2046,6 +2048,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_strip_nonstandard_row.set_activatable(True)
         self.step_strip_nonstandard_row.connect("activated", self.on_step_strip_nonstandard_clicked)
+        self._attach_step_status(self.step_strip_nonstandard_row)
         self.step_list.append(self.step_strip_nonstandard_row)
 
         self.step_infer_case_row = Adw.ActionRow(
@@ -2054,6 +2057,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_infer_case_row.set_activatable(True)
         self.step_infer_case_row.connect("activated", self.on_step_infer_case_clicked)
+        self._attach_step_status(self.step_infer_case_row)
         self.step_list.append(self.step_infer_case_row)
 
         self.step_two_row = Adw.ActionRow(
@@ -2062,6 +2066,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_two_row.set_activatable(True)
         self.step_two_row.connect("activated", self.on_step_two_clicked)
+        self._attach_step_status(self.step_two_row)
         self.step_list.append(self.step_two_row)
 
         self.step_six_row = Adw.ActionRow(
@@ -2070,6 +2075,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_six_row.set_activatable(True)
         self.step_six_row.connect("activated", self.on_step_six_clicked)
+        self._attach_step_status(self.step_six_row)
         self.step_list.append(self.step_six_row)
 
         self.step_seven_row = Adw.ActionRow(
@@ -2078,6 +2084,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_seven_row.set_activatable(True)
         self.step_seven_row.connect("activated", self.on_step_seven_clicked)
+        self._attach_step_status(self.step_seven_row)
         self.step_list.append(self.step_seven_row)
 
         self.step_eight_row = Adw.ActionRow(
@@ -2086,6 +2093,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_eight_row.set_activatable(True)
         self.step_eight_row.connect("activated", self.on_step_eight_clicked)
+        self._attach_step_status(self.step_eight_row)
         self.step_list.append(self.step_eight_row)
 
         self.step_nine_row = Adw.ActionRow(
@@ -2094,6 +2102,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_nine_row.set_activatable(True)
         self.step_nine_row.connect("activated", self.on_step_nine_clicked)
+        self._attach_step_status(self.step_nine_row)
         self.step_list.append(self.step_nine_row)
 
         self.step_ten_row = Adw.ActionRow(
@@ -2102,6 +2111,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_ten_row.set_activatable(True)
         self.step_ten_row.connect("activated", self.on_step_ten_clicked)
+        self._attach_step_status(self.step_ten_row)
         self.step_list.append(self.step_ten_row)
 
         self.step_eleven_row = Adw.ActionRow(
@@ -2110,6 +2120,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_eleven_row.set_activatable(True)
         self.step_eleven_row.connect("activated", self.on_step_eleven_clicked)
+        self._attach_step_status(self.step_eleven_row)
         self.step_list.append(self.step_eleven_row)
 
         self.step_twelve_row = Adw.ActionRow(
@@ -2118,6 +2129,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self.step_twelve_row.set_activatable(True)
         self.step_twelve_row.connect("activated", self.on_step_twelve_clicked)
+        self._attach_step_status(self.step_twelve_row)
         self.step_list.append(self.step_twelve_row)
 
         self._setup_menu(app)
@@ -2171,8 +2183,27 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         else:
             self.status_spinner.stop()
 
+    def _attach_step_status(self, row: Adw.ActionRow) -> None:
+        status_label = Gtk.Label(label="Pending", xalign=1)
+        status_label.add_css_class("dim-label")
+        row.add_suffix(status_label)
+        self._step_status_labels[row] = status_label
+
+    def _set_step_status(self, row: Adw.ActionRow, status: str) -> None:
+        label = self._step_status_labels.get(row)
+        if label is not None:
+            label.set_text(status)
+
+    def _reset_step_statuses(self) -> None:
+        for row in self._step_status_labels:
+            self._set_step_status(row, "Pending")
+
+    def _finish_step(self, row: Adw.ActionRow, success: bool) -> None:
+        self._set_step_status(row, "Done" if success else "Failed")
+
     def _start_step(self, row: Adw.ActionRow) -> None:
         title = row.get_title() or "Working"
+        self._set_step_status(row, "Running")
         self._set_status(f"Working: {title}", True)
 
     def _stop_status(self) -> None:
@@ -2221,6 +2252,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(self.selected_pdfs) == 1
             else f"{len(self.selected_pdfs)} PDFs selected"
         )
+        self._reset_step_statuses()
         self.selected_label.set_text(f"Selected: {label}")
         self.show_toast(f"Selected: {label}")
 
@@ -2233,6 +2265,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if len(self.selected_pdfs) == 1
             else f"{len(self.selected_pdfs)} PDFs selected"
         )
+        self._reset_step_statuses()
         self.selected_label.set_text(f"Selected: {label}")
 
     def _load_case_context(self) -> None:
@@ -2302,6 +2335,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Create files complete.")
         finally:
             GLib.idle_add(self.step_one_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_one_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -2332,6 +2366,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Strip non-standard characters complete.")
         finally:
             GLib.idle_add(self.step_strip_nonstandard_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_strip_nonstandard_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -2373,6 +2408,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Infer case name complete.")
         finally:
             GLib.idle_add(self.step_infer_case_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_infer_case_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -2622,6 +2658,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Classify complete.")
         finally:
             GLib.idle_add(self.step_two_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_two_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -2715,6 +2752,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Build TOC complete.")
         finally:
             GLib.idle_add(self.step_six_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_six_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -2831,6 +2869,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Find boundaries complete.")
         finally:
             GLib.idle_add(self.step_seven_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_seven_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -2872,6 +2911,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Create raw complete.")
         finally:
             GLib.idle_add(self.step_eight_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_eight_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -3007,6 +3047,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Create optimized complete.")
         finally:
             GLib.idle_add(self.step_nine_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_nine_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -3235,6 +3276,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Create summaries complete.")
         finally:
             GLib.idle_add(self.step_ten_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_ten_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -3289,6 +3331,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Case overview complete.")
         finally:
             GLib.idle_add(self.step_eleven_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_eleven_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -3365,6 +3408,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, "Create RAG index complete.")
         finally:
             GLib.idle_add(self.step_twelve_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_twelve_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
