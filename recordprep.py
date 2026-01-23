@@ -3042,59 +3042,90 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             entries = _load_classify_basic_entries(classify_basic_path)
             if not entries:
                 raise FileNotFoundError("No entries found in basic.jsonl.")
-            current_type: str | None = None
-            current_start_file: str | None = None
-            current_end_file: str | None = None
+            current_report_start: str | None = None
+            current_report_end: str | None = None
             for file_name, page_type, page_number in entries:
-                is_sequence_type = page_type in {"hearing", "report", "minute_order"}
-                if not is_sequence_type:
-                    if current_type:
+                if page_type != "report":
+                    if current_report_start:
                         self._append_boundary_entry(
-                            current_type,
-                            current_start_file,
-                            current_end_file,
+                            "report",
+                            current_report_start,
+                            current_report_end,
                             date_by_file,
                             report_name_by_file,
                             hearing_boundaries,
                             report_boundaries,
                             minutes_boundaries,
                         )
-                        current_type = None
-                        current_start_file = None
-                        current_end_file = None
+                        current_report_start = None
+                        current_report_end = None
                     continue
                 if (
-                    page_type != current_type
-                    or current_end_file is None
-                    or _extract_page_number(current_end_file) != page_number - 1
+                    current_report_end is not None
+                    and _extract_page_number(current_report_end) == page_number - 1
                 ):
-                    if current_type:
+                    current_report_end = file_name
+                else:
+                    if current_report_start:
                         self._append_boundary_entry(
-                            current_type,
-                            current_start_file,
-                            current_end_file,
+                            "report",
+                            current_report_start,
+                            current_report_end,
                             date_by_file,
                             report_name_by_file,
                             hearing_boundaries,
                             report_boundaries,
                             minutes_boundaries,
                         )
-                    current_type = page_type
-                    current_start_file = file_name
-                    current_end_file = file_name
-                else:
-                    current_end_file = file_name
-            if current_type:
+                    current_report_start = file_name
+                    current_report_end = file_name
+            if current_report_start:
                 self._append_boundary_entry(
-                    current_type,
-                    current_start_file,
-                    current_end_file,
+                    "report",
+                    current_report_start,
+                    current_report_end,
                     date_by_file,
                     report_name_by_file,
                     hearing_boundaries,
                     report_boundaries,
                     minutes_boundaries,
                 )
+
+            index = 0
+            total = len(entries)
+            while index < total:
+                file_name, page_type, page_number = entries[index]
+                if page_type in {"hearing_first_page", "minute_order_first_page"}:
+                    expected_follow_type = (
+                        "hearing"
+                        if page_type == "hearing_first_page"
+                        else "minute_order"
+                    )
+                    end_file = file_name
+                    last_number = page_number
+                    index += 1
+                    while index < total:
+                        next_file, next_type, next_number = entries[index]
+                        if (
+                            next_type != expected_follow_type
+                            or next_number != last_number + 1
+                        ):
+                            break
+                        end_file = next_file
+                        last_number = next_number
+                        index += 1
+                    self._append_boundary_entry(
+                        page_type,
+                        file_name,
+                        end_file,
+                        date_by_file,
+                        report_name_by_file,
+                        hearing_boundaries,
+                        report_boundaries,
+                        minutes_boundaries,
+                    )
+                    continue
+                index += 1
             hearing_path = derived_dir / "hearing_boundaries.json"
             hearing_path.write_text(
                 json.dumps(hearing_boundaries, indent=2),
@@ -3718,7 +3749,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         start_page = _page_label_from_filename(start_file)
         end_page = _page_label_from_filename(end_file)
-        if page_type == "hearing":
+        if page_type in {"hearing", "hearing_first_page"}:
             hearing_boundaries.append(
                 {
                     "date": date_by_file.get(start_file, ""),
@@ -3736,7 +3767,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 }
             )
             return
-        if page_type == "minute_order":
+        if page_type in {"minute_order", "minute_order_first_page"}:
             minutes_boundaries.append(
                 {
                     "date": date_by_file.get(start_file, ""),
