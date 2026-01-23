@@ -7,3 +7,9 @@ __pycache__/
 # App config and prompts
 config.json
 prompts/
+
+# Local assets and reference scripts
+CreateMinOutlineFromTOC.sh
+example_python_GTK4_app/
+example_rag_scripts/
+recordprep_icon.png
