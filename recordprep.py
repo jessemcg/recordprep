@@ -58,6 +58,10 @@ CONFIG_KEY_CASE_NAME_API_KEY = "case_name_api_key"
 CONFIG_KEY_CASE_NAME_PROMPT = "case_name_prompt"
 CONFIG_KEY_CASE_NAME = "case_name"
 CONFIG_KEY_CASE_ROOT_DIR = "case_root_dir"
+CONFIG_KEY_FORM_FILTER_API_URL = "form_filter_api_url"
+CONFIG_KEY_FORM_FILTER_MODEL_ID = "form_filter_model_id"
+CONFIG_KEY_FORM_FILTER_API_KEY = "form_filter_api_key"
+CONFIG_KEY_FORM_FILTER_PROMPT = "form_filter_prompt"
 CONFIG_KEY_CLASSIFY_FORMS_API_URL = "classify_form_names_api_url"
 CONFIG_KEY_CLASSIFY_FORMS_MODEL_ID = "classify_form_names_model_id"
 CONFIG_KEY_CLASSIFY_FORMS_API_KEY = "classify_form_names_api_key"
@@ -103,6 +107,12 @@ DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT = (
     "Return JSON with keys: report_name. "
     "report_name should be the formal report title if present. "
     "If unknown, use an empty string."
+)
+DEFAULT_FORM_FILTER_PROMPT = (
+    "You are reviewing a page labeled form_first_page in an OCR'd legal transcript. "
+    "Return JSON with keys: is_relevant. "
+    "is_relevant must be yes if and only if the page is one of the five specific forms we care about; "
+    "otherwise return no."
 )
 DEFAULT_CLASSIFY_FORM_NAMES_PROMPT = (
     "You are extracting the form name from a form_first_page in an OCR'd legal transcript. "
@@ -232,6 +242,10 @@ def _extract_page_number(filename: str) -> int | None:
     return None
 
 
+def _is_truthy(value: str) -> bool:
+    return value.strip().lower() in {"true", "yes", "y", "1", "relevant", "keep"}
+
+
 def _load_classify_date_targets(classify_path: Path) -> list[tuple[str, str]]:
     targets: list[tuple[str, str]] = []
     if not classify_path.exists():
@@ -320,6 +334,16 @@ def _load_classify_form_targets(classify_path: Path) -> list[tuple[str, str]]:
             if not file_name or page_type != "form_first_page":
                 continue
             targets.append((file_name, page_type))
+    return targets
+
+
+def _load_relevant_form_targets(path: Path) -> list[str]:
+    entries = _load_jsonl_entries(path)
+    targets: list[str] = []
+    for entry in entries:
+        file_name = _extract_entry_value(entry, "file_name", "filename")
+        if file_name:
+            targets.append(file_name)
     return targets
 
 
@@ -874,6 +898,7 @@ def _write_manifest(
             "basic": _relpath(classification_dir / "basic.jsonl"),
             "dates": _relpath(classification_dir / "dates.jsonl"),
             "report_names": _relpath(classification_dir / "report_names.jsonl"),
+            "relevant_forms": _relpath(classification_dir / "relevant_forms.jsonl"),
             "form_names": _relpath(classification_dir / "form_names.jsonl"),
         },
         "rag": {
@@ -959,6 +984,29 @@ def load_classify_further_settings() -> dict[str, str]:
         "reports_prompt": reports_prompt or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT,
         "forms_prompt": forms_prompt or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT,
     }
+
+
+def load_form_filter_settings() -> dict[str, str]:
+    config = _read_config()
+    api_url = str(config.get(CONFIG_KEY_FORM_FILTER_API_URL, "") or "").strip()
+    model_id = str(config.get(CONFIG_KEY_FORM_FILTER_MODEL_ID, "") or "").strip()
+    api_key = str(config.get(CONFIG_KEY_FORM_FILTER_API_KEY, "") or "").strip()
+    prompt = str(config.get(CONFIG_KEY_FORM_FILTER_PROMPT, DEFAULT_FORM_FILTER_PROMPT) or "").strip()
+    return {
+        "api_url": api_url,
+        "model_id": model_id,
+        "api_key": api_key,
+        "prompt": prompt or DEFAULT_FORM_FILTER_PROMPT,
+    }
+
+
+def save_form_filter_settings(api_url: str, model_id: str, api_key: str, prompt: str) -> None:
+    config = _read_config()
+    config[CONFIG_KEY_FORM_FILTER_API_URL] = api_url
+    config[CONFIG_KEY_FORM_FILTER_MODEL_ID] = model_id
+    config[CONFIG_KEY_FORM_FILTER_API_KEY] = api_key
+    config[CONFIG_KEY_FORM_FILTER_PROMPT] = prompt or DEFAULT_FORM_FILTER_PROMPT
+    _write_config(config)
 
 
 def save_classify_further_settings(api_url: str, model_id: str, api_key: str) -> None:
@@ -1451,18 +1499,37 @@ class SettingsWindow(Adw.ApplicationWindow):
         classify_box.set_margin_bottom(8)
         classify_box.set_margin_start(12)
         classify_box.set_margin_end(12)
-        classify_label = Gtk.Label(label="Classify", xalign=0)
+        classify_label = Gtk.Label(label="Classification basic", xalign=0)
         classify_box.append(classify_label)
         classify_row.set_child(classify_box)
         prompt_list.append(classify_row)
         self._prompt_row_keys[classify_row] = "classify-basic"
         classify_page = self._build_prompt_page(
             "classify-basic",
-            "Classify",
+            "Classification basic",
             load_classifier_settings(),
             DEFAULT_CLASSIFIER_PROMPT,
         )
         prompt_stack.add_named(classify_page, "classify-basic")
+
+        classify_filter_row = Gtk.ListBoxRow()
+        classify_filter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        classify_filter_box.set_margin_top(8)
+        classify_filter_box.set_margin_bottom(8)
+        classify_filter_box.set_margin_start(12)
+        classify_filter_box.set_margin_end(12)
+        classify_filter_label = Gtk.Label(label="Classification filter", xalign=0)
+        classify_filter_box.append(classify_filter_label)
+        classify_filter_row.set_child(classify_filter_box)
+        prompt_list.append(classify_filter_row)
+        self._prompt_row_keys[classify_filter_row] = "classify-filter"
+        classify_filter_page = self._build_prompt_page(
+            "classify-filter",
+            "Classification filter",
+            load_form_filter_settings(),
+            DEFAULT_FORM_FILTER_PROMPT,
+        )
+        prompt_stack.add_named(classify_filter_page, "classify-filter")
 
         classify_further_row = Gtk.ListBoxRow()
         classify_further_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -1470,7 +1537,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         classify_further_box.set_margin_bottom(8)
         classify_further_box.set_margin_start(12)
         classify_further_box.set_margin_end(12)
-        classify_further_label = Gtk.Label(label="Classify further", xalign=0)
+        classify_further_label = Gtk.Label(label="Classification dates/names", xalign=0)
         classify_further_box.append(classify_further_label)
         classify_further_row.set_child(classify_further_box)
         prompt_list.append(classify_further_row)
@@ -1656,7 +1723,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         page_box.set_margin_end(12)
         page_box.set_vexpand(True)
 
-        title_label = Gtk.Label(label="Classify further", xalign=0)
+        title_label = Gtk.Label(label="Classification dates/names", xalign=0)
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
@@ -1984,6 +2051,7 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _save_settings(self) -> None:
         case_widgets = self._prompt_editors.get("case-name")
         classify_basic_widgets = self._prompt_editors.get("classify-basic")
+        classify_filter_widgets = self._prompt_editors.get("classify-filter")
         classify_further_widgets = self._classify_further_widgets
         optimize_widgets = getattr(self, "_optimize_widgets", None)
         summarize_widgets = getattr(self, "_summarize_widgets", None)
@@ -2002,6 +2070,13 @@ class SettingsWindow(Adw.ApplicationWindow):
                 classify_basic_widgets.model_row.get_text().strip(),
                 classify_basic_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(classify_basic_widgets.prompt_buffer).strip(),
+            )
+        if classify_filter_widgets:
+            save_form_filter_settings(
+                classify_filter_widgets.api_url_row.get_text().strip(),
+                classify_filter_widgets.model_row.get_text().strip(),
+                classify_filter_widgets.api_key_row.get_text().strip(),
+                self._prompt_text(classify_filter_widgets.prompt_buffer).strip(),
             )
         if classify_further_widgets:
             api_url = classify_further_widgets.api_url_row.get_text().strip()
@@ -2138,7 +2213,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_list.append(self.step_infer_case_row)
 
         self.step_two_row = Adw.ActionRow(
-            title="Classify",
+            title="Classification basic",
             subtitle="Create basic classifications for every page.",
         )
         self.step_two_row.set_activatable(True)
@@ -2146,8 +2221,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._attach_step_status(self.step_two_row)
         self.step_list.append(self.step_two_row)
 
+        self.step_filter_row = Adw.ActionRow(
+            title="Classification filter",
+            subtitle="Identify relevant forms from form first pages.",
+        )
+        self.step_filter_row.set_activatable(True)
+        self.step_filter_row.connect("activated", self.on_step_filter_clicked)
+        self._attach_step_status(self.step_filter_row)
+        self.step_list.append(self.step_filter_row)
+
         self.step_three_row = Adw.ActionRow(
-            title="Classify further",
+            title="Classification dates/names",
             subtitle="Classify dates, report names, and form names from first pages.",
         )
         self.step_three_row.set_activatable(True)
@@ -2368,6 +2452,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ("strip_characters", self.step_strip_nonstandard_row, self._run_step_strip_nonstandard),
             ("infer_case", self.step_infer_case_row, self._run_step_infer_case),
             ("classify_basic", self.step_two_row, self._run_step_two),
+            ("classify_filter", self.step_filter_row, self._run_step_filter),
             ("classify_further", self.step_three_row, self._run_step_three),
             ("build_toc", self.step_six_row, self._run_step_six),
             ("find_boundaries", self.step_seven_row, self._run_step_seven),
@@ -2602,6 +2687,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._start_step(self.step_two_row)
         threading.Thread(target=self._run_step_two, daemon=True).start()
 
+    def on_step_filter_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self.step_filter_row.set_sensitive(False)
+        self._start_step(self.step_filter_row)
+        threading.Thread(target=self._run_step_filter, daemon=True).start()
+
     def on_step_three_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
@@ -2746,7 +2839,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     handle.write("\n")
                 done_basic.add(text_path.name)
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Classify basic failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Classification basic failed: {exc}")
         else:
             success = True
             self._safe_update_manifest(
@@ -2757,10 +2850,86 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "last_failed_at": None,
                 },
             )
-            GLib.idle_add(self.show_toast, "Classify basic complete.")
+            GLib.idle_add(self.show_toast, "Classification basic complete.")
         finally:
             GLib.idle_add(self.step_two_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_two_row, success)
+            GLib.idle_add(self._stop_status_if_idle)
+        return success
+
+    def _run_step_filter(self) -> bool:
+        success = False
+        try:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "case_bundle"
+            text_dir = root_dir / "text_pages"
+            if not text_dir.exists():
+                raise FileNotFoundError("Run Create files to generate text files first.")
+            classification_dir = root_dir / "classification"
+            classify_basic_path = classification_dir / "basic.jsonl"
+            if not classify_basic_path.exists():
+                raise FileNotFoundError("Run Classification basic to generate basic classifications first.")
+            filter_settings = load_form_filter_settings()
+            if (
+                not filter_settings["api_url"]
+                or not filter_settings["model_id"]
+                or not filter_settings["api_key"]
+            ):
+                raise ValueError(
+                    "Configure classification filter API URL, model ID, and API key in Settings."
+                )
+            classification_dir.mkdir(parents=True, exist_ok=True)
+            relevant_forms_path = classification_dir / "relevant_forms.jsonl"
+            relevant_forms_path.touch(exist_ok=True)
+            done_relevant = _load_jsonl_file_names(relevant_forms_path)
+            form_targets = _load_classify_form_targets(classify_basic_path)
+            if form_targets:
+                filter_payload = {
+                    "api_url": filter_settings["api_url"],
+                    "model_id": filter_settings["model_id"],
+                    "api_key": filter_settings["api_key"],
+                    "prompt": filter_settings["prompt"],
+                }
+                for file_name, _page_type in form_targets:
+                    if file_name in done_relevant:
+                        continue
+                    text_path = text_dir / file_name
+                    if not text_path.exists():
+                        raise FileNotFoundError(
+                            f"Missing text file {file_name} for form filter classification."
+                        )
+                    content = text_path.read_text(encoding="utf-8", errors="ignore")
+                    entry = self._classify_text(filter_payload, file_name, content)
+                    is_relevant = _is_truthy(_extract_entry_value(entry, "is_relevant", "relevant", "keep"))
+                    if not is_relevant:
+                        continue
+                    ordered_entry: dict[str, str | int] = {"file_name": file_name}
+                    page_number = _extract_page_number(file_name)
+                    if page_number is not None:
+                        ordered_entry["page_number"] = page_number
+                    with relevant_forms_path.open("a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(ordered_entry))
+                        handle.write("\n")
+                    done_relevant.add(file_name)
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Classification filter failed: {exc}")
+        else:
+            success = True
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "classify_filter",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
+            GLib.idle_add(self.show_toast, "Classification filter complete.")
+        finally:
+            GLib.idle_add(self.step_filter_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_filter_row, success)
             GLib.idle_add(self._stop_status_if_idle)
         return success
 
@@ -2778,7 +2947,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             classification_dir = root_dir / "classification"
             classify_basic_path = classification_dir / "basic.jsonl"
             if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Classify to generate basic classifications first.")
+                raise FileNotFoundError("Run Classification basic to generate basic classifications first.")
+            relevant_forms_path = classification_dir / "relevant_forms.jsonl"
+            if not relevant_forms_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification filter to generate relevant form classifications first."
+                )
             further_settings = load_classify_further_settings()
             if (
                 not further_settings["api_url"]
@@ -2854,7 +3028,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             classify_form_names_path = classification_dir / "form_names.jsonl"
             classify_form_names_path.touch(exist_ok=True)
             done_forms = _load_jsonl_file_names(classify_form_names_path)
-            form_targets = _load_classify_form_targets(classify_basic_path)
+            form_targets = _load_relevant_form_targets(relevant_forms_path)
             if form_targets:
                 form_settings_payload = {
                     "api_url": further_settings["api_url"],
@@ -2862,7 +3036,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "api_key": further_settings["api_key"],
                     "prompt": further_settings["forms_prompt"],
                 }
-                for file_name, _page_type in form_targets:
+                for file_name in form_targets:
                     if file_name in done_forms:
                         continue
                     text_path = text_dir / file_name
@@ -2882,7 +3056,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         handle.write("\n")
                     done_forms.add(file_name)
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Classify further failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Classification dates/names failed: {exc}")
         else:
             success = True
             self._safe_update_manifest(
@@ -2893,7 +3067,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "last_failed_at": None,
                 },
             )
-            GLib.idle_add(self.show_toast, "Classify further complete.")
+            GLib.idle_add(self.show_toast, "Classification dates/names complete.")
         finally:
             GLib.idle_add(self.step_three_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_three_row, success)
@@ -2922,7 +3096,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ):
                 if not path.exists():
                     raise FileNotFoundError(
-                        "Run Classify and Classify further to generate classify JSONL files first."
+                        "Run Classification basic, filter, and dates/names to generate classify JSONL files first."
                     )
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_entries = _load_jsonl_entries(classify_dates_path)
@@ -3019,7 +3193,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             for path in (classify_basic_path, classify_dates_path, classify_report_names_path):
                 if not path.exists():
                     raise FileNotFoundError(
-                        "Run Classify and Classify further to generate classify JSONL files first."
+                        "Run Classification basic, filter, and dates/names to generate classify JSONL files first."
                     )
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_by_file: dict[str, str] = {}
