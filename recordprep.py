@@ -2965,9 +2965,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 date_value = date_by_file.get(file_name, "").strip()
                 page = _page_label_from_filename(file_name)
                 line = _format_toc_line(date_value, page)
-                if page_type == "minute_order":
+                if page_type == "minute_order_first_page":
                     minute_order_lines.append(line)
-                elif page_type == "hearing":
+                elif page_type == "hearing_first_page":
                     hearing_lines.append(line)
             toc_lines: list[str] = [
                 "FORMS",
