@@ -36,6 +36,10 @@ LLM_RETRY_BASE_SECONDS = 1.0
 LLM_RETRY_MAX_SECONDS = 30.0
 LLM_RETRYABLE_HTTP_CODES = {408, 409, 429, 500, 502, 503, 504}
 
+
+class StopRequested(RuntimeError):
+    pass
+
 CONFIG_FILE = Path(__file__).with_name("config.json")
 CONFIG_KEY_CLASSIFIER_API_URL = "classifier_api_url"
 CONFIG_KEY_CLASSIFIER_MODEL_ID = "classifier_model_id"
@@ -2132,6 +2136,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.selected_pdfs: list[Path] = []
         self._settings_window: SettingsWindow | None = None
         self._pipeline_running = False
+        self._stop_event = threading.Event()
         self._step_status_labels: dict[Adw.ActionRow, Gtk.Label] = {}
 
         header_bar = Adw.HeaderBar()
@@ -2174,6 +2179,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.run_all_button.set_halign(Gtk.Align.START)
         self.run_all_button.connect("clicked", self.on_run_all_clicked)
         action_box.append(self.run_all_button)
+
+        self.stop_button = Gtk.Button(label="Stop")
+        self.stop_button.set_halign(Gtk.Align.START)
+        self.stop_button.set_sensitive(False)
+        self.stop_button.connect("clicked", self.on_stop_clicked)
+        action_box.append(self.stop_button)
 
         self.resume_button = Gtk.Button(label="Resume")
         self.resume_button.set_halign(Gtk.Align.START)
@@ -2368,8 +2379,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         for row in self._step_status_labels:
             self._set_step_status(row, "Pending")
 
-    def _finish_step(self, row: Adw.ActionRow, success: bool) -> None:
-        self._set_step_status(row, "Done" if success else "Failed")
+    def _finish_step(self, row: Adw.ActionRow, success: bool | None) -> None:
+        if success is None:
+            self._set_step_status(row, "Stopped")
+        else:
+            self._set_step_status(row, "Done" if success else "Failed")
 
     def _start_step(self, row: Adw.ActionRow) -> None:
         title = row.get_title() or "Working"
@@ -2382,6 +2396,21 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     def _stop_status_if_idle(self) -> None:
         if not self._pipeline_running:
             self._stop_status()
+
+    def _stop_button_if_idle(self) -> None:
+        if not self._pipeline_running:
+            self.stop_button.set_sensitive(False)
+
+    def _raise_if_stop_requested(self) -> None:
+        if self._stop_event.is_set():
+            raise StopRequested()
+
+    def on_stop_clicked(self, _button: Gtk.Button) -> None:
+        if self._stop_event.is_set():
+            return
+        self._stop_event.set()
+        self.stop_button.set_sensitive(False)
+        self.show_toast("Stop requested.")
 
     def _safe_update_manifest(
         self, root_dir: Path, pipeline_info: dict[str, Any] | None = None
@@ -2498,8 +2527,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if self._pipeline_running:
             self.show_toast("Pipeline already running.")
             return
+        self._stop_event.clear()
         self._pipeline_running = True
         self.run_all_button.set_sensitive(False)
+        self.stop_button.set_sensitive(True)
         self.resume_button.set_sensitive(False)
         self.step_list.set_sensitive(False)
         threading.Thread(target=self._run_all_steps, daemon=True).start()
@@ -2522,8 +2553,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         for _step_id, row, _handler in steps[:start_index]:
             self._set_step_status(row, "Done")
+        self._stop_event.clear()
         self._pipeline_running = True
         self.run_all_button.set_sensitive(False)
+        self.stop_button.set_sensitive(True)
         self.resume_button.set_sensitive(False)
         self.step_list.set_sensitive(False)
         threading.Thread(
@@ -2536,6 +2569,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_one_row.set_sensitive(False)
         self._start_step(self.step_one_row)
         threading.Thread(target=self._run_step_one, daemon=True).start()
@@ -2544,6 +2579,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_strip_nonstandard_row.set_sensitive(False)
         self._start_step(self.step_strip_nonstandard_row)
         threading.Thread(target=self._run_step_strip_nonstandard, daemon=True).start()
@@ -2552,13 +2589,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_infer_case_row.set_sensitive(False)
         self._start_step(self.step_infer_case_row)
         threading.Thread(target=self._run_step_infer_case, daemon=True).start()
 
     def _run_step_one(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -2571,8 +2611,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 pdf_path = _merge_pdfs(self.selected_pdfs, merged_path)
             else:
                 pdf_path = self.selected_pdfs[0]
+            self._raise_if_stop_requested()
             _generate_text_files(pdf_path, text_dir)
+            self._raise_if_stop_requested()
             _generate_image_page_files(pdf_path, image_pages_dir)
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Create files failed: {exc}")
         else:
@@ -2590,11 +2634,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_one_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_one_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_strip_nonstandard(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -2607,10 +2653,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not text_files:
                 raise FileNotFoundError("No text files found to sanitize.")
             for text_path in text_files:
+                self._raise_if_stop_requested()
                 content = text_path.read_text(encoding="utf-8", errors="ignore")
                 cleaned = _strip_nonstandard_characters(content)
                 if cleaned != content:
                     text_path.write_text(cleaned, encoding="utf-8")
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Strip non-standard characters failed: {exc}")
         else:
@@ -2628,11 +2677,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_strip_nonstandard_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_strip_nonstandard_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_infer_case(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -2660,6 +2711,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             save_case_context(case_name, base_dir)
             display_name = case_name.replace("_", " ") if case_name else case_name
             GLib.idle_add(self.selected_label.set_text, f"Selected: {display_name}")
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Infer case name failed: {exc}")
         else:
@@ -2677,12 +2730,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_infer_case_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_infer_case_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def on_step_two_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_two_row.set_sensitive(False)
         self._start_step(self.step_two_row)
         threading.Thread(target=self._run_step_two, daemon=True).start()
@@ -2691,6 +2747,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_filter_row.set_sensitive(False)
         self._start_step(self.step_filter_row)
         threading.Thread(target=self._run_step_filter, daemon=True).start()
@@ -2699,6 +2757,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_three_row.set_sensitive(False)
         self._start_step(self.step_three_row)
         threading.Thread(target=self._run_step_three, daemon=True).start()
@@ -2707,6 +2767,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_six_row.set_sensitive(False)
         self._start_step(self.step_six_row)
         threading.Thread(target=self._run_step_six, daemon=True).start()
@@ -2715,6 +2777,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_seven_row.set_sensitive(False)
         self._start_step(self.step_seven_row)
         threading.Thread(target=self._run_step_seven, daemon=True).start()
@@ -2723,6 +2787,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_eight_row.set_sensitive(False)
         self._start_step(self.step_eight_row)
         threading.Thread(target=self._run_step_eight, daemon=True).start()
@@ -2731,6 +2797,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_nine_row.set_sensitive(False)
         self._start_step(self.step_nine_row)
         threading.Thread(target=self._run_step_nine, daemon=True).start()
@@ -2739,6 +2807,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_ten_row.set_sensitive(False)
         self._start_step(self.step_ten_row)
         threading.Thread(target=self._run_step_ten, daemon=True).start()
@@ -2747,6 +2817,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_eleven_row.set_sensitive(False)
         self._start_step(self.step_eleven_row)
         threading.Thread(target=self._run_step_eleven, daemon=True).start()
@@ -2755,6 +2827,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
         self.step_twelve_row.set_sensitive(False)
         self._start_step(self.step_twelve_row)
         threading.Thread(target=self._run_step_twelve, daemon=True).start()
@@ -2770,12 +2844,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         current_step_id: str | None = None
         try:
             for step_id, row, handler in steps[start_index:]:
+                self._raise_if_stop_requested()
                 current_step_id = step_id
                 GLib.idle_add(self._start_step, row)
                 if not handler():
                     success = False
                     failed_step_id = step_id
                     break
+        except StopRequested:
+            success = False
+            if current_step_id and not failed_step_id:
+                failed_step_id = current_step_id
         except Exception as exc:
             success = False
             if current_step_id and not failed_step_id:
@@ -2787,19 +2866,25 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._finish_run_all, success)
 
     def _finish_run_all(self, success: bool) -> None:
+        stop_requested = self._stop_event.is_set()
+        self._stop_event.clear()
         self._pipeline_running = False
         self.run_all_button.set_sensitive(True)
+        self.stop_button.set_sensitive(False)
         self.resume_button.set_sensitive(True)
         self.step_list.set_sensitive(True)
         self._stop_status()
-        if success:
+        if stop_requested:
+            self.show_toast("Pipeline stopped.")
+        elif success:
             self.show_toast("Pipeline complete.")
         else:
             self.show_toast("Pipeline stopped. Fix the errors and try again.")
 
     def _run_step_two(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -2830,6 +2915,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 "prompt": shared_settings["prompt"],
             }
             for text_path in text_files:
+                self._raise_if_stop_requested()
                 if text_path.name in done_basic:
                     continue
                 content = text_path.read_text(encoding="utf-8", errors="ignore")
@@ -2838,6 +2924,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     handle.write(json.dumps(entry))
                     handle.write("\n")
                 done_basic.add(text_path.name)
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Classification basic failed: {exc}")
         else:
@@ -2855,11 +2943,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_two_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_two_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_filter(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -2894,6 +2984,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "prompt": filter_settings["prompt"],
                 }
                 for file_name, _page_type in form_targets:
+                    self._raise_if_stop_requested()
                     if file_name in done_relevant:
                         continue
                     text_path = text_dir / file_name
@@ -2914,6 +3005,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         handle.write(json.dumps(ordered_entry))
                         handle.write("\n")
                     done_relevant.add(file_name)
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Classification filter failed: {exc}")
         else:
@@ -2931,11 +3024,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_filter_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_filter_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_three(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -2975,6 +3070,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "prompt": further_settings["dates_prompt"],
                 }
                 for file_name, _page_type in date_targets:
+                    self._raise_if_stop_requested()
                     if file_name in done_dates:
                         continue
                     text_path = text_dir / file_name
@@ -3006,6 +3102,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "prompt": further_settings["reports_prompt"],
                 }
                 for file_name, _page_type in report_targets:
+                    self._raise_if_stop_requested()
                     if file_name in done_reports:
                         continue
                     text_path = text_dir / file_name
@@ -3037,6 +3134,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "prompt": further_settings["forms_prompt"],
                 }
                 for file_name in form_targets:
+                    self._raise_if_stop_requested()
                     if file_name in done_forms:
                         continue
                     text_path = text_dir / file_name
@@ -3055,6 +3153,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         handle.write(json.dumps(ordered_entry))
                         handle.write("\n")
                     done_forms.add(file_name)
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Classification dates/names failed: {exc}")
         else:
@@ -3072,11 +3172,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_three_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_three_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_six(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -3103,12 +3205,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             basic_entries = _load_jsonl_entries(classify_basic_path)
             date_by_file: dict[str, str] = {}
             for entry in date_entries:
+                self._raise_if_stop_requested()
                 file_name = _extract_entry_value(entry, "file_name", "filename")
                 if not file_name:
                     continue
                 date_value = _extract_entry_value(entry, "date")
                 date_by_file[file_name] = date_value
             for entry in basic_entries:
+                self._raise_if_stop_requested()
                 file_name = _extract_entry_value(entry, "file_name", "filename")
                 if not file_name or file_name in date_by_file:
                     continue
@@ -3117,6 +3221,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     date_by_file[file_name] = date_value
             form_lines: list[str] = []
             for entry in _load_jsonl_entries(classify_form_names_path):
+                self._raise_if_stop_requested()
                 form_name = _extract_entry_value(entry, "form_name", "form")
                 if not form_name:
                     continue
@@ -3126,6 +3231,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 form_lines.append(_format_toc_line(form_name, page))
             report_lines: list[str] = []
             for entry in _load_jsonl_entries(classify_report_names_path):
+                self._raise_if_stop_requested()
                 report_name = _extract_entry_value(entry, "report_name", "report", "name")
                 if not report_name:
                     continue
@@ -3136,6 +3242,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             minute_order_lines: list[str] = []
             hearing_lines: list[str] = []
             for file_name, page_type in _load_classify_date_targets(classify_basic_path):
+                self._raise_if_stop_requested()
                 date_value = date_by_file.get(file_name, "").strip()
                 page = _page_label_from_filename(file_name)
                 line = _format_toc_line(date_value, page)
@@ -3158,6 +3265,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ]
             toc_path = derived_dir / "toc.txt"
             toc_path.write_text("\n".join(toc_lines).rstrip() + "\n", encoding="utf-8")
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Build TOC failed: {exc}")
         else:
@@ -3175,11 +3284,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_six_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_six_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_seven(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -3198,6 +3309,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_by_file: dict[str, str] = {}
             for entry in _load_jsonl_entries(classify_dates_path):
+                self._raise_if_stop_requested()
                 file_name = _extract_entry_value(entry, "file_name", "filename")
                 if not file_name:
                     continue
@@ -3206,6 +3318,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     date_by_file[file_name] = date_value
             report_name_by_file: dict[str, str] = {}
             for entry in _load_jsonl_entries(classify_report_names_path):
+                self._raise_if_stop_requested()
                 file_name = _extract_entry_value(entry, "file_name", "filename")
                 report_name = _extract_entry_value(entry, "report_name", "report", "name")
                 if file_name and report_name:
@@ -3219,6 +3332,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             current_report_start: str | None = None
             current_report_end: str | None = None
             for file_name, page_type, page_number in entries:
+                self._raise_if_stop_requested()
                 if page_type != "report":
                     if current_report_start:
                         self._append_boundary_entry(
@@ -3268,6 +3382,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             index = 0
             total = len(entries)
             while index < total:
+                self._raise_if_stop_requested()
                 file_name, page_type, page_number = entries[index]
                 if page_type in {"hearing_first_page", "minute_order_first_page"}:
                     expected_follow_type = (
@@ -3279,6 +3394,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     last_number = page_number
                     index += 1
                     while index < total:
+                        self._raise_if_stop_requested()
                         next_file, next_type, next_number = entries[index]
                         if (
                             next_type != expected_follow_type
@@ -3315,6 +3431,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 json.dumps(minutes_boundaries, indent=2),
                 encoding="utf-8",
             )
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Find boundaries failed: {exc}")
         else:
@@ -3332,11 +3450,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_seven_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_seven_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_eight(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -3364,6 +3484,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             )
             (artifacts_dir / "raw_hearings.txt").write_text(raw_hearings, encoding="utf-8")
             (artifacts_dir / "raw_reports.txt").write_text(raw_reports, encoding="utf-8")
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Create raw failed: {exc}")
         else:
@@ -3381,11 +3503,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_eight_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_eight_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_nine(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -3417,6 +3541,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             optimized_hearings: list[str] = []
             hearing_index = 0
             for label, content in hearing_sections:
+                self._raise_if_stop_requested()
                 if not content:
                     continue
                 sentences = _split_into_sentences(content)
@@ -3442,6 +3567,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         attorney_excerpt,
                     )
                 for offset, chunk in enumerate(chunks):
+                    self._raise_if_stop_requested()
                     index = hearing_index + offset
                     if index in hearing_checkpoint:
                         continue
@@ -3461,6 +3587,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 hearing_index += len(chunks)
 
             for index in range(hearing_index):
+                self._raise_if_stop_requested()
                 response_text = hearing_checkpoint.get(index, "")
                 if response_text:
                     optimized_hearings.append(response_text)
@@ -3468,6 +3595,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             optimized_reports: list[str] = []
             report_index = 0
             for label, content in report_sections:
+                self._raise_if_stop_requested()
                 if not content:
                     continue
                 sentences = _split_into_sentences(content)
@@ -3477,6 +3605,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 if not chunks:
                     continue
                 for offset, chunk in enumerate(chunks):
+                    self._raise_if_stop_requested()
                     index = report_index + offset
                     if index in report_checkpoint:
                         continue
@@ -3495,6 +3624,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 report_index += len(chunks)
 
             for index in range(report_index):
+                self._raise_if_stop_requested()
                 response_text = report_checkpoint.get(index, "")
                 if response_text:
                     optimized_reports.append(response_text)
@@ -3507,6 +3637,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 _collapse_blank_lines("\n\n".join(optimized_reports)),
                 encoding="utf-8",
             )
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Create optimized failed: {exc}")
         else:
@@ -3524,11 +3656,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_nine_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_nine_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_ten(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -3583,6 +3717,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             hearing_groups: list[tuple[str, list[str]]] = []
             current_date: str | None = None
             for paragraph in hearing_paragraphs:
+                self._raise_if_stop_requested()
                 cleaned, date_value = _strip_hearing_date_prefix(paragraph)
                 if date_value:
                     date_value = _normalize_hearing_date(date_value)
@@ -3597,7 +3732,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
             hearing_chunk_index = 0
             for date_value, paragraphs in hearing_groups:
+                self._raise_if_stop_requested()
                 for chunk in _chunk_paragraphs(paragraphs, chunk_size):
+                    self._raise_if_stop_requested()
                     if hearing_chunk_index in hearing_checkpoint:
                         hearing_chunk_index += 1
                         continue
@@ -3623,12 +3760,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             first_section = True
             hearing_chunk_index = 0
             for date_value, paragraphs in hearing_groups:
+                self._raise_if_stop_requested()
                 if not first_section:
                     summary_hearings.append("")
                 summary_hearings.append(date_value or "HEARING")
                 summary_hearings.append("")
                 first_section = False
                 for chunk in _chunk_paragraphs(paragraphs, chunk_size):
+                    self._raise_if_stop_requested()
                     response = hearing_checkpoint.get(hearing_chunk_index, "")
                     hearing_chunk_index += 1
                     if response:
@@ -3649,6 +3788,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ]
             report_chunk_index = 0
             for chunk in _chunk_paragraphs(report_paragraphs, chunk_size):
+                self._raise_if_stop_requested()
                 if report_chunk_index not in report_checkpoint:
                     response = self._request_plain_text(
                         {
@@ -3670,6 +3810,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
             report_chunk_index = 0
             for chunk in _chunk_paragraphs(report_paragraphs, chunk_size):
+                self._raise_if_stop_requested()
                 response = report_checkpoint.get(report_chunk_index, "")
                 report_chunk_index += 1
                 if response:
@@ -3685,6 +3826,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             minute_entries = _load_json_entries(minutes_boundaries_path)
             minutes_index = 0
             for entry in minute_entries:
+                self._raise_if_stop_requested()
                 date_value = _extract_entry_value(entry, "date").strip()
                 start_label = _extract_entry_value(entry, "start_page", "start", "starte_page").strip()
                 end_label = _extract_entry_value(entry, "end_page", "end", "endpage").strip()
@@ -3698,6 +3840,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 minutes_outline.append("")
                 page_texts: list[str] = []
                 for page in range(start_page, end_page + 1):
+                    self._raise_if_stop_requested()
                     page_path = text_dir / f"{page:04d}.txt"
                     if not page_path.exists():
                         raise FileNotFoundError(f"Missing text file {page_path.name}.")
@@ -3743,6 +3886,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 _collapse_blank_lines("\n".join(minutes_outline)),
                 encoding="utf-8",
             )
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Create summaries failed: {exc}")
         else:
@@ -3760,11 +3905,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_ten_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_ten_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_eleven(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -3805,6 +3952,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 _collapse_blank_lines(overview),
                 encoding="utf-8",
             )
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Case overview failed: {exc}")
         else:
@@ -3822,11 +3971,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_eleven_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_eleven_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _run_step_twelve(self) -> bool:
-        success = False
+        success: bool | None = False
         try:
+            self._raise_if_stop_requested()
             parents = {path.parent for path in self.selected_pdfs}
             if len(parents) != 1:
                 raise ValueError("Selected PDFs must be in the same folder.")
@@ -3872,6 +4023,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
             documents: list[Document] = []
             for paragraph in _split_paragraphs(hearing_text):
+                self._raise_if_stop_requested()
                 documents.append(
                     Document(
                         page_content=paragraph,
@@ -3879,6 +4031,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     )
                 )
             for paragraph in _split_paragraphs(report_text):
+                self._raise_if_stop_requested()
                 documents.append(
                     Document(
                         page_content=paragraph,
@@ -3889,6 +4042,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("No paragraphs found to embed.")
             vectorstore.add_documents(documents)
 
+        except StopRequested:
+            success = None
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Create RAG index failed: {exc}")
         else:
@@ -3906,7 +4061,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.step_twelve_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_twelve_row, success)
             GLib.idle_add(self._stop_status_if_idle)
-        return success
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
 
     def _append_boundary_entry(
         self,
@@ -3956,6 +4112,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         filename: str,
         content: str,
     ) -> dict[str, str]:
+        self._raise_if_stop_requested()
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
@@ -4004,6 +4161,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         return result
 
     def _request_plain_text(self, settings: dict[str, str], content: str) -> str:
+        self._raise_if_stop_requested()
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
