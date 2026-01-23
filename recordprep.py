@@ -66,6 +66,7 @@ CONFIG_KEY_FORM_FILTER_API_URL = "form_filter_api_url"
 CONFIG_KEY_FORM_FILTER_MODEL_ID = "form_filter_model_id"
 CONFIG_KEY_FORM_FILTER_API_KEY = "form_filter_api_key"
 CONFIG_KEY_FORM_FILTER_PROMPT = "form_filter_prompt"
+CONFIG_KEY_REPORT_FILTER_PROMPT = "report_filter_prompt"
 CONFIG_KEY_CLASSIFY_FORMS_API_URL = "classify_form_names_api_url"
 CONFIG_KEY_CLASSIFY_FORMS_MODEL_ID = "classify_form_names_model_id"
 CONFIG_KEY_CLASSIFY_FORMS_API_KEY = "classify_form_names_api_key"
@@ -116,6 +117,12 @@ DEFAULT_FORM_FILTER_PROMPT = (
     "You are reviewing a page labeled form_first_page in an OCR'd legal transcript. "
     "Return JSON with keys: is_relevant. "
     "is_relevant must be yes if and only if the page is one of the five specific forms we care about; "
+    "otherwise return no."
+)
+DEFAULT_REPORT_FILTER_PROMPT = (
+    "You are reviewing a page labeled report in an OCR'd legal transcript. "
+    "Return JSON with keys: is_relevant. "
+    "is_relevant must be yes if and only if the report is one of the relevant report titles; "
     "otherwise return no."
 )
 DEFAULT_CLASSIFY_FORM_NAMES_PROMPT = (
@@ -342,6 +349,16 @@ def _load_classify_form_targets(classify_path: Path) -> list[tuple[str, str]]:
 
 
 def _load_relevant_form_targets(path: Path) -> list[str]:
+    entries = _load_jsonl_entries(path)
+    targets: list[str] = []
+    for entry in entries:
+        file_name = _extract_entry_value(entry, "file_name", "filename")
+        if file_name:
+            targets.append(file_name)
+    return targets
+
+
+def _load_relevant_report_targets(path: Path) -> list[str]:
     entries = _load_jsonl_entries(path)
     targets: list[str] = []
     for entry in entries:
@@ -900,9 +917,11 @@ def _write_manifest(
         },
         "classification": {
             "basic": _relpath(classification_dir / "basic.jsonl"),
+            "basic_corrected": _relpath(classification_dir / "basic_corrected.jsonl"),
             "dates": _relpath(classification_dir / "dates.jsonl"),
             "report_names": _relpath(classification_dir / "report_names.jsonl"),
             "relevant_forms": _relpath(classification_dir / "relevant_forms.jsonl"),
+            "relevant_reports": _relpath(classification_dir / "relevant_reports.jsonl"),
             "form_names": _relpath(classification_dir / "form_names.jsonl"),
         },
         "rag": {
@@ -996,20 +1015,31 @@ def load_form_filter_settings() -> dict[str, str]:
     model_id = str(config.get(CONFIG_KEY_FORM_FILTER_MODEL_ID, "") or "").strip()
     api_key = str(config.get(CONFIG_KEY_FORM_FILTER_API_KEY, "") or "").strip()
     prompt = str(config.get(CONFIG_KEY_FORM_FILTER_PROMPT, DEFAULT_FORM_FILTER_PROMPT) or "").strip()
+    report_prompt = str(
+        config.get(CONFIG_KEY_REPORT_FILTER_PROMPT, DEFAULT_REPORT_FILTER_PROMPT) or ""
+    ).strip()
     return {
         "api_url": api_url,
         "model_id": model_id,
         "api_key": api_key,
         "prompt": prompt or DEFAULT_FORM_FILTER_PROMPT,
+        "report_prompt": report_prompt or DEFAULT_REPORT_FILTER_PROMPT,
     }
 
 
-def save_form_filter_settings(api_url: str, model_id: str, api_key: str, prompt: str) -> None:
+def save_form_filter_settings(
+    api_url: str,
+    model_id: str,
+    api_key: str,
+    prompt: str,
+    report_prompt: str,
+) -> None:
     config = _read_config()
     config[CONFIG_KEY_FORM_FILTER_API_URL] = api_url
     config[CONFIG_KEY_FORM_FILTER_MODEL_ID] = model_id
     config[CONFIG_KEY_FORM_FILTER_API_KEY] = api_key
     config[CONFIG_KEY_FORM_FILTER_PROMPT] = prompt or DEFAULT_FORM_FILTER_PROMPT
+    config[CONFIG_KEY_REPORT_FILTER_PROMPT] = report_prompt or DEFAULT_REPORT_FILTER_PROMPT
     _write_config(config)
 
 
@@ -1220,6 +1250,15 @@ class ClassifyFurtherSettingsWidgets:
 
 
 @dataclass
+class ClassifyFilterSettingsWidgets:
+    api_url_row: Adw.EntryRow
+    model_row: Adw.EntryRow
+    api_key_row: Adw.EntryRow
+    form_prompt_buffer: Gtk.TextBuffer
+    report_prompt_buffer: Gtk.TextBuffer
+
+
+@dataclass
 class OptimizeSettingsWidgets:
     api_url_row: Adw.EntryRow
     model_row: Adw.EntryRow
@@ -1412,6 +1451,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._on_saved = on_saved
         self._prompt_editors: dict[str, ClassifySettingsWidgets] = {}
         self._classify_further_widgets: ClassifyFurtherSettingsWidgets | None = None
+        self._classify_filter_widgets: ClassifyFilterSettingsWidgets | None = None
         self._prompt_row_keys: dict[Gtk.ListBoxRow, str] = {}
         self._build_ui()
 
@@ -1527,12 +1567,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         classify_filter_row.set_child(classify_filter_box)
         prompt_list.append(classify_filter_row)
         self._prompt_row_keys[classify_filter_row] = "classify-filter"
-        classify_filter_page = self._build_prompt_page(
-            "classify-filter",
-            "Classification filter",
-            load_form_filter_settings(),
-            DEFAULT_FORM_FILTER_PROMPT,
-        )
+        classify_filter_page = self._build_classify_filter_prompt_page()
         prompt_stack.add_named(classify_filter_page, "classify-filter")
 
         classify_further_row = Gtk.ListBoxRow()
@@ -1714,6 +1749,74 @@ class SettingsWindow(Adw.ApplicationWindow):
             model_row=model_row,
             api_key_row=api_key_row,
             prompt_buffer=buffer,
+        )
+        return page
+
+    def _build_classify_filter_prompt_page(self) -> Gtk.Widget:
+        settings = load_form_filter_settings()
+
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page_box.set_margin_top(12)
+        page_box.set_margin_bottom(12)
+        page_box.set_margin_start(12)
+        page_box.set_margin_end(12)
+        page_box.set_vexpand(True)
+
+        title_label = Gtk.Label(label="Classification filter", xalign=0)
+        title_label.add_css_class("title-3")
+        page_box.append(title_label)
+
+        credentials_group = Adw.PreferencesGroup(title="Credentials")
+        credentials_group.add_css_class("list-stack")
+        credentials_group.set_hexpand(True)
+        page_box.append(credentials_group)
+
+        api_url_row = Adw.EntryRow(title="API URL")
+        api_url_row.set_text(settings.get("api_url", ""))
+        credentials_group.add(api_url_row)
+
+        model_row = Adw.EntryRow(title="Model ID (optional)")
+        model_row.set_text(settings.get("model_id", ""))
+        credentials_group.add(model_row)
+
+        api_key_row = self._build_password_row("API Key")
+        api_key_row.set_text(settings.get("api_key", ""))
+        credentials_group.add(api_key_row)
+
+        prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        prompt_section.set_hexpand(True)
+        prompt_section.set_vexpand(True)
+
+        forms_label = Gtk.Label(label="Form Relevance Prompt", xalign=0)
+        forms_label.add_css_class("dim-label")
+        prompt_section.append(forms_label)
+        forms_scroller, forms_buffer = self._build_prompt_editor(
+            settings.get("prompt") or DEFAULT_FORM_FILTER_PROMPT
+        )
+        prompt_section.append(forms_scroller)
+
+        reports_label = Gtk.Label(label="Report Relevance Prompt", xalign=0)
+        reports_label.add_css_class("dim-label")
+        prompt_section.append(reports_label)
+        reports_scroller, reports_buffer = self._build_prompt_editor(
+            settings.get("report_prompt") or DEFAULT_REPORT_FILTER_PROMPT
+        )
+        prompt_section.append(reports_scroller)
+
+        page_box.append(prompt_section)
+
+        page = Gtk.ScrolledWindow()
+        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page.set_hexpand(True)
+        page.set_vexpand(True)
+        page.set_child(page_box)
+
+        self._classify_filter_widgets = ClassifyFilterSettingsWidgets(
+            api_url_row=api_url_row,
+            model_row=model_row,
+            api_key_row=api_key_row,
+            form_prompt_buffer=forms_buffer,
+            report_prompt_buffer=reports_buffer,
         )
         return page
 
@@ -2055,7 +2158,7 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _save_settings(self) -> None:
         case_widgets = self._prompt_editors.get("case-name")
         classify_basic_widgets = self._prompt_editors.get("classify-basic")
-        classify_filter_widgets = self._prompt_editors.get("classify-filter")
+        classify_filter_widgets = self._classify_filter_widgets
         classify_further_widgets = self._classify_further_widgets
         optimize_widgets = getattr(self, "_optimize_widgets", None)
         summarize_widgets = getattr(self, "_summarize_widgets", None)
@@ -2080,7 +2183,8 @@ class SettingsWindow(Adw.ApplicationWindow):
                 classify_filter_widgets.api_url_row.get_text().strip(),
                 classify_filter_widgets.model_row.get_text().strip(),
                 classify_filter_widgets.api_key_row.get_text().strip(),
-                self._prompt_text(classify_filter_widgets.prompt_buffer).strip(),
+                self._prompt_text(classify_filter_widgets.form_prompt_buffer).strip(),
+                self._prompt_text(classify_filter_widgets.report_prompt_buffer).strip(),
             )
         if classify_further_widgets:
             api_url = classify_further_widgets.api_url_row.get_text().strip()
@@ -2231,6 +2335,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_two_row.connect("activated", self.on_step_two_clicked)
         self._attach_step_status(self.step_two_row)
         self.step_list.append(self.step_two_row)
+
+        self.step_correct_basic_row = Adw.ActionRow(
+            title="Correct basic classification",
+            subtitle="Fix common classification mistakes in basic.jsonl.",
+        )
+        self.step_correct_basic_row.set_activatable(True)
+        self.step_correct_basic_row.connect("activated", self.on_step_correct_basic_clicked)
+        self._attach_step_status(self.step_correct_basic_row)
+        self.step_list.append(self.step_correct_basic_row)
 
         self.step_filter_row = Adw.ActionRow(
             title="Classification filter",
@@ -2481,6 +2594,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ("strip_characters", self.step_strip_nonstandard_row, self._run_step_strip_nonstandard),
             ("infer_case", self.step_infer_case_row, self._run_step_infer_case),
             ("classify_basic", self.step_two_row, self._run_step_two),
+            ("correct_basic", self.step_correct_basic_row, self._run_step_correct_basic),
             ("classify_filter", self.step_filter_row, self._run_step_filter),
             ("classify_further", self.step_three_row, self._run_step_three),
             ("build_toc", self.step_six_row, self._run_step_six),
@@ -2753,6 +2867,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._start_step(self.step_filter_row)
         threading.Thread(target=self._run_step_filter, daemon=True).start()
 
+    def on_step_correct_basic_clicked(self, _row: Adw.ActionRow) -> None:
+        if not self.selected_pdfs:
+            self.show_toast("Choose PDF files first.")
+            return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
+        self.step_correct_basic_row.set_sensitive(False)
+        self._start_step(self.step_correct_basic_row)
+        threading.Thread(target=self._run_step_correct_basic, daemon=True).start()
+
     def on_step_three_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
@@ -2946,6 +3070,170 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._stop_button_if_idle)
         return success is True
 
+    def _run_step_correct_basic(self) -> bool:
+        success: bool | None = False
+        try:
+            self._raise_if_stop_requested()
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                raise ValueError("Selected PDFs must be in the same folder.")
+            base_dir = parents.pop()
+            root_dir = base_dir / "case_bundle"
+            classification_dir = root_dir / "classification"
+            classify_basic_path = classification_dir / "basic.jsonl"
+            if not classify_basic_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification basic to generate basic classifications first."
+                )
+            entries = _load_jsonl_entries(classify_basic_path)
+            if not entries:
+                raise FileNotFoundError("No entries found in basic.jsonl.")
+            page_types: list[str] = [
+                _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                for entry in entries
+            ]
+            corrected = list(page_types)
+            total = len(corrected)
+
+            def is_hearing(value: str) -> bool:
+                return value == "hearing"
+
+            def is_hearing_like(value: str) -> bool:
+                return value in {"hearing", "hearing_first_page"}
+
+            def is_report(value: str) -> bool:
+                return value == "report"
+
+            def is_cover_or_index(value: str) -> bool:
+                return value in {"cover", "index"}
+
+            index = 0
+            while index < total:
+                self._raise_if_stop_requested()
+                if index + 1 < total and not is_hearing_like(
+                    corrected[index]
+                ) and not is_hearing_like(corrected[index + 1]):
+                    if (
+                        index - 2 >= 0
+                        and index + 3 < total
+                        and all(
+                            is_hearing_like(corrected[i]) for i in range(index - 2, index)
+                        )
+                        and all(
+                            is_hearing_like(corrected[i])
+                            for i in range(index + 2, index + 4)
+                        )
+                    ):
+                        corrected[index] = "hearing"
+                        corrected[index + 1] = "hearing"
+                        index += 2
+                        continue
+                if not is_hearing_like(corrected[index]):
+                    if (
+                        index - 2 >= 0
+                        and index + 2 < total
+                        and all(
+                            is_hearing_like(corrected[i]) for i in range(index - 2, index)
+                        )
+                        and all(
+                            is_hearing_like(corrected[i])
+                            for i in range(index + 1, index + 3)
+                        )
+                    ):
+                        corrected[index] = "hearing"
+                index += 1
+
+            for index in range(1, total - 1):
+                self._raise_if_stop_requested()
+                if (
+                    corrected[index] == "hearing_first_page"
+                    and is_cover_or_index(corrected[index - 1])
+                    and is_cover_or_index(corrected[index + 1])
+                ):
+                    corrected[index] = "cover"
+
+            index = 0
+            while index < total:
+                self._raise_if_stop_requested()
+                if corrected[index] != "hearing":
+                    index += 1
+                    continue
+                start = index
+                while index < total and corrected[index] == "hearing":
+                    index += 1
+                if index - start >= 2 and start > 0 and is_cover_or_index(corrected[start - 1]):
+                    corrected[start] = "hearing_first_page"
+
+            for index in range(2, total - 2):
+                self._raise_if_stop_requested()
+                if not is_report(corrected[index]):
+                    if (
+                        is_report(corrected[index - 1])
+                        and is_report(corrected[index - 2])
+                        and is_report(corrected[index + 1])
+                        and is_report(corrected[index + 2])
+                    ):
+                        corrected[index] = "report"
+
+            for index in range(1, total - 1):
+                self._raise_if_stop_requested()
+                if (
+                    corrected[index] == "minute_order"
+                    and corrected[index - 1] not in {"minute_order", "minute_order_first_page"}
+                    and corrected[index + 1] not in {"minute_order", "minute_order_first_page"}
+                ):
+                    corrected[index] = "minute_order_first_page"
+
+            index = 0
+            while index < total:
+                self._raise_if_stop_requested()
+                if corrected[index] != "minute_order":
+                    index += 1
+                    continue
+                start = index
+                while index < total and corrected[index] == "minute_order":
+                    index += 1
+                if index - start >= 2:
+                    prev = corrected[start - 1] if start > 0 else ""
+                    if prev not in {"minute_order", "minute_order_first_page"}:
+                        corrected[start] = "minute_order_first_page"
+
+            corrections = 0
+            for entry, new_type, old_type in zip(entries, corrected, page_types):
+                if new_type and new_type != old_type:
+                    entry["page_type"] = new_type
+                    corrections += 1
+
+            corrected_path = classification_dir / "basic_corrected.jsonl"
+            with corrected_path.open("w", encoding="utf-8") as handle:
+                for entry in entries:
+                    handle.write(json.dumps(entry))
+                    handle.write("\n")
+        except StopRequested:
+            success = None
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Correct basic classification failed: {exc}")
+        else:
+            success = True
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "correct_basic",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
+            GLib.idle_add(
+                self.show_toast,
+                f"Correct basic classification complete. {corrections} changes applied.",
+            )
+        finally:
+            GLib.idle_add(self.step_correct_basic_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_correct_basic_row, success)
+            GLib.idle_add(self._stop_status_if_idle)
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
+
     def _run_step_filter(self) -> bool:
         success: bool | None = False
         try:
@@ -2959,9 +3247,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
             classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "basic.jsonl"
+            classify_basic_path = classification_dir / "basic_corrected.jsonl"
             if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Classification basic to generate basic classifications first.")
+                raise FileNotFoundError(
+                    "Run Correct basic classification to generate corrected classifications first."
+                )
             filter_settings = load_form_filter_settings()
             if (
                 not filter_settings["api_url"]
@@ -3005,6 +3295,39 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         handle.write(json.dumps(ordered_entry))
                         handle.write("\n")
                     done_relevant.add(file_name)
+            relevant_reports_path = classification_dir / "relevant_reports.jsonl"
+            relevant_reports_path.touch(exist_ok=True)
+            done_reports = _load_jsonl_file_names(relevant_reports_path)
+            report_targets = _load_classify_report_targets(classify_basic_path)
+            if report_targets:
+                report_payload = {
+                    "api_url": filter_settings["api_url"],
+                    "model_id": filter_settings["model_id"],
+                    "api_key": filter_settings["api_key"],
+                    "prompt": filter_settings["report_prompt"],
+                }
+                for file_name, _page_type in report_targets:
+                    self._raise_if_stop_requested()
+                    if file_name in done_reports:
+                        continue
+                    text_path = text_dir / file_name
+                    if not text_path.exists():
+                        raise FileNotFoundError(
+                            f"Missing text file {file_name} for report filter classification."
+                        )
+                    content = text_path.read_text(encoding="utf-8", errors="ignore")
+                    entry = self._classify_text(report_payload, file_name, content)
+                    is_relevant = _is_truthy(_extract_entry_value(entry, "is_relevant", "relevant", "keep"))
+                    if not is_relevant:
+                        continue
+                    ordered_entry = {"file_name": file_name}
+                    page_number = _extract_page_number(file_name)
+                    if page_number is not None:
+                        ordered_entry["page_number"] = page_number
+                    with relevant_reports_path.open("a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(ordered_entry))
+                        handle.write("\n")
+                    done_reports.add(file_name)
         except StopRequested:
             success = None
         except Exception as exc:
@@ -3040,13 +3363,20 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
             classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "basic.jsonl"
+            classify_basic_path = classification_dir / "basic_corrected.jsonl"
             if not classify_basic_path.exists():
-                raise FileNotFoundError("Run Classification basic to generate basic classifications first.")
+                raise FileNotFoundError(
+                    "Run Correct basic classification to generate corrected classifications first."
+                )
             relevant_forms_path = classification_dir / "relevant_forms.jsonl"
             if not relevant_forms_path.exists():
                 raise FileNotFoundError(
                     "Run Classification filter to generate relevant form classifications first."
+                )
+            relevant_reports_path = classification_dir / "relevant_reports.jsonl"
+            if not relevant_reports_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification filter to generate relevant report classifications first."
                 )
             further_settings = load_classify_further_settings()
             if (
@@ -3093,7 +3423,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             classify_report_names_path = classification_dir / "report_names.jsonl"
             classify_report_names_path.touch(exist_ok=True)
             done_reports = _load_jsonl_file_names(classify_report_names_path)
-            report_targets = _load_classify_report_targets(classify_basic_path)
+            report_targets = _load_relevant_report_targets(relevant_reports_path)
             if report_targets:
                 report_settings_payload = {
                     "api_url": further_settings["api_url"],
@@ -3101,7 +3431,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "api_key": further_settings["api_key"],
                     "prompt": further_settings["reports_prompt"],
                 }
-                for file_name, _page_type in report_targets:
+                for file_name in report_targets:
                     self._raise_if_stop_requested()
                     if file_name in done_reports:
                         continue
@@ -3186,7 +3516,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             root_dir = base_dir / "case_bundle"
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
-            classify_basic_path = classification_dir / "basic.jsonl"
+            classify_basic_path = classification_dir / "basic_corrected.jsonl"
             classify_dates_path = classification_dir / "dates.jsonl"
             classify_report_names_path = classification_dir / "report_names.jsonl"
             classify_form_names_path = classification_dir / "form_names.jsonl"
@@ -3198,7 +3528,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ):
                 if not path.exists():
                     raise FileNotFoundError(
-                        "Run Classification basic, filter, and dates/names to generate classify JSONL files first."
+                        "Run Correct basic classification, filter, and dates/names to generate classify JSONL files first."
                     )
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_entries = _load_jsonl_entries(classify_dates_path)
@@ -3298,14 +3628,19 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             root_dir = base_dir / "case_bundle"
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
-            classify_basic_path = classification_dir / "basic.jsonl"
+            classify_basic_path = classification_dir / "basic_corrected.jsonl"
             classify_dates_path = classification_dir / "dates.jsonl"
             classify_report_names_path = classification_dir / "report_names.jsonl"
+            relevant_reports_path = classification_dir / "relevant_reports.jsonl"
             for path in (classify_basic_path, classify_dates_path, classify_report_names_path):
                 if not path.exists():
                     raise FileNotFoundError(
-                        "Run Classification basic, filter, and dates/names to generate classify JSONL files first."
+                        "Run Correct basic classification, filter, and dates/names to generate classify JSONL files first."
                     )
+            if not relevant_reports_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification filter to generate relevant report classifications first."
+                )
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_by_file: dict[str, str] = {}
             for entry in _load_jsonl_entries(classify_dates_path):
@@ -3323,30 +3658,34 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 report_name = _extract_entry_value(entry, "report_name", "report", "name")
                 if file_name and report_name:
                     report_name_by_file[file_name] = report_name
+            relevant_report_files = set(_load_relevant_report_targets(relevant_reports_path))
             hearing_boundaries: list[dict[str, str]] = []
             report_boundaries: list[dict[str, str]] = []
             minutes_boundaries: list[dict[str, str]] = []
             entries = _load_classify_basic_entries(classify_basic_path)
             if not entries:
-                raise FileNotFoundError("No entries found in basic.jsonl.")
+                raise FileNotFoundError("No entries found in basic_corrected.jsonl.")
             current_report_start: str | None = None
             current_report_end: str | None = None
+            report_sequence_relevant = False
             for file_name, page_type, page_number in entries:
                 self._raise_if_stop_requested()
                 if page_type != "report":
                     if current_report_start:
-                        self._append_boundary_entry(
-                            "report",
-                            current_report_start,
-                            current_report_end,
-                            date_by_file,
-                            report_name_by_file,
-                            hearing_boundaries,
-                            report_boundaries,
-                            minutes_boundaries,
-                        )
+                        if report_sequence_relevant:
+                            self._append_boundary_entry(
+                                "report",
+                                current_report_start,
+                                current_report_end,
+                                date_by_file,
+                                report_name_by_file,
+                                hearing_boundaries,
+                                report_boundaries,
+                                minutes_boundaries,
+                            )
                         current_report_start = None
                         current_report_end = None
+                        report_sequence_relevant = False
                     continue
                 if (
                     current_report_end is not None
@@ -3355,29 +3694,32 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     current_report_end = file_name
                 else:
                     if current_report_start:
-                        self._append_boundary_entry(
-                            "report",
-                            current_report_start,
-                            current_report_end,
-                            date_by_file,
-                            report_name_by_file,
-                            hearing_boundaries,
-                            report_boundaries,
-                            minutes_boundaries,
-                        )
+                        if report_sequence_relevant:
+                            self._append_boundary_entry(
+                                "report",
+                                current_report_start,
+                                current_report_end,
+                                date_by_file,
+                                report_name_by_file,
+                                hearing_boundaries,
+                                report_boundaries,
+                                minutes_boundaries,
+                            )
                     current_report_start = file_name
                     current_report_end = file_name
+                    report_sequence_relevant = file_name in relevant_report_files
             if current_report_start:
-                self._append_boundary_entry(
-                    "report",
-                    current_report_start,
-                    current_report_end,
-                    date_by_file,
-                    report_name_by_file,
-                    hearing_boundaries,
-                    report_boundaries,
-                    minutes_boundaries,
-                )
+                if report_sequence_relevant:
+                    self._append_boundary_entry(
+                        "report",
+                        current_report_start,
+                        current_report_end,
+                        date_by_file,
+                        report_name_by_file,
+                        hearing_boundaries,
+                        report_boundaries,
+                        minutes_boundaries,
+                    )
 
             index = 0
             total = len(entries)
