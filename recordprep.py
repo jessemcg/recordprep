@@ -85,13 +85,15 @@ CONFIG_KEY_SELECTED_PDFS = "selected_pdfs"
 DEFAULT_CLASSIFIER_PROMPT = (
     "You are labeling a single page of an OCR'd legal transcript. "
     "Return JSON with keys: page_type, form_name, date. "
-    "page_type must be one of: hearing, report, form, cover, index, notice, minute_order. "
+    "page_type must be one of: hearing, hearing_first_page, report, form, cover, index, "
+    "notice, minute_order, minute_order_first_page, form_first_page. "
     "date should be a long-form U.S. date if present. "
-    "form_name should be the form name if page_type is form. "
+    "form_name should be the form name if page_type is form or form_first_page. "
     "If unknown, use an empty string."
 )
 DEFAULT_CLASSIFY_DATES_PROMPT = (
-    "You are extracting the date from a hearing or minute order page of an OCR'd legal transcript. "
+    "You are extracting the date from a hearing_first_page or minute_order_first_page page "
+    "of an OCR'd legal transcript. "
     "Return JSON with keys: date. "
     "date should be a long-form U.S. date if present. "
     "If unknown, use an empty string."
@@ -103,7 +105,7 @@ DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT = (
     "If unknown, use an empty string."
 )
 DEFAULT_CLASSIFY_FORM_NAMES_PROMPT = (
-    "You are extracting the form name from a form page in an OCR'd legal transcript. "
+    "You are extracting the form name from a form_first_page in an OCR'd legal transcript. "
     "Return JSON with keys: form_name. "
     "form_name should be the formal form title if present. "
     "If unknown, use an empty string."
@@ -254,17 +256,9 @@ def _load_classify_date_targets(classify_path: Path) -> list[tuple[str, str]]:
             if page_number is None:
                 continue
             entries.append((file_name, page_type, page_number))
-    prev_type: str | None = None
-    prev_number: int | None = None
     for file_name, page_type, page_number in entries:
-        if page_type in {"hearing", "minute_order"}:
-            if page_type != prev_type or prev_number is None or page_number != prev_number + 1:
-                targets.append((file_name, page_type))
-            prev_type = page_type
-            prev_number = page_number
-        else:
-            prev_type = None
-            prev_number = None
+        if page_type in {"hearing_first_page", "minute_order_first_page"}:
+            targets.append((file_name, page_type))
     return targets
 
 
@@ -323,7 +317,7 @@ def _load_classify_form_targets(classify_path: Path) -> list[tuple[str, str]]:
                 continue
             file_name = str(payload.get("file_name", "") or "").strip()
             page_type = str(payload.get("page_type", "") or "").strip().lower()
-            if not file_name or page_type != "form":
+            if not file_name or page_type != "form_first_page":
                 continue
             targets.append((file_name, page_type))
     return targets
@@ -1687,7 +1681,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         prompt_section.set_hexpand(True)
         prompt_section.set_vexpand(True)
 
-        dates_label = Gtk.Label(label="Classify Dates Prompt", xalign=0)
+        dates_label = Gtk.Label(label="Classify Dates (First Pages) Prompt", xalign=0)
         dates_label.add_css_class("dim-label")
         prompt_section.append(dates_label)
         dates_scroller, dates_buffer = self._build_prompt_editor(
@@ -1695,7 +1689,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         prompt_section.append(dates_scroller)
 
-        reports_label = Gtk.Label(label="Classify Report Names Prompt", xalign=0)
+        reports_label = Gtk.Label(label="Classify Report Names (First Pages) Prompt", xalign=0)
         reports_label.add_css_class("dim-label")
         prompt_section.append(reports_label)
         reports_scroller, reports_buffer = self._build_prompt_editor(
@@ -1703,7 +1697,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         prompt_section.append(reports_scroller)
 
-        forms_label = Gtk.Label(label="Classify Form Names Prompt", xalign=0)
+        forms_label = Gtk.Label(label="Classify Form Names (First Pages) Prompt", xalign=0)
         forms_label.add_css_class("dim-label")
         prompt_section.append(forms_label)
         forms_scroller, forms_buffer = self._build_prompt_editor(
@@ -2154,7 +2148,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.step_three_row = Adw.ActionRow(
             title="Classify further",
-            subtitle="Classify dates, report names, and form names.",
+            subtitle="Classify dates, report names, and form names from first pages.",
         )
         self.step_three_row.set_activatable(True)
         self.step_three_row.connect("activated", self.on_step_three_clicked)
