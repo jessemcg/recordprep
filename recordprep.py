@@ -2484,6 +2484,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._attach_step_status(self.step_six_row)
         self.step_list.append(self.step_six_row)
 
+        self.step_correct_toc_row = Adw.ActionRow(
+            title="Correct TOC",
+            subtitle="Remove duplicate minute order dates.",
+        )
+        self.step_correct_toc_row.set_activatable(True)
+        self.step_correct_toc_row.connect("activated", self.on_step_correct_toc_clicked)
+        self._attach_step_status(self.step_correct_toc_row)
+        self.step_list.append(self.step_correct_toc_row)
+
         self.step_seven_row = Adw.ActionRow(
             title="Find boundaries",
             subtitle="Determine page ranges for hearing, report, and minute order sections.",
@@ -2716,6 +2725,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ("classify_dates", self.step_dates_row, self._run_step_dates),
             ("classify_names", self.step_names_row, self._run_step_names),
             ("build_toc", self.step_six_row, self._run_step_six),
+            ("correct_toc", self.step_correct_toc_row, self._run_step_correct_toc),
             ("find_boundaries", self.step_seven_row, self._run_step_seven),
             ("create_raw", self.step_eight_row, self._run_step_eight),
             ("create_optimized", self.step_nine_row, self._run_step_nine),
@@ -3093,6 +3103,20 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_six_row.set_sensitive(False)
         self._start_step(self.step_six_row)
         threading.Thread(target=self._run_step_six, daemon=True).start()
+
+    def on_step_correct_toc_clicked(self, _row: Adw.ActionRow) -> None:
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
+            return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
+        self.step_correct_toc_row.set_sensitive(False)
+        self._start_step(self.step_correct_toc_row)
+        threading.Thread(target=self._run_step_correct_toc, daemon=True).start()
 
     def on_step_seven_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -3882,6 +3906,73 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         finally:
             GLib.idle_add(self.step_six_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_six_row, success)
+            GLib.idle_add(self._stop_status_if_idle)
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
+
+    def _run_step_correct_toc(self) -> bool:
+        success: bool | None = False
+        try:
+            self._raise_if_stop_requested()
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
+            derived_dir = root_dir / "artifacts"
+            toc_path = derived_dir / "toc.txt"
+            if not toc_path.exists():
+                raise FileNotFoundError("Run Build TOC to generate artifacts/toc.txt first.")
+            toc_lines = toc_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            corrected_lines: list[str] = []
+            in_minute_orders = False
+            seen_dates: set[str] = set()
+            for line in toc_lines:
+                self._raise_if_stop_requested()
+                stripped = line.strip()
+                if stripped == "MINUTE ORDERS":
+                    in_minute_orders = True
+                    seen_dates.clear()
+                    corrected_lines.append(line)
+                    continue
+                if stripped in {"FORMS", "REPORTS", "HEARINGS"}:
+                    in_minute_orders = False
+                    corrected_lines.append(line)
+                    continue
+                if in_minute_orders:
+                    if not stripped:
+                        corrected_lines.append(line)
+                        continue
+                    if not line.startswith("\t"):
+                        corrected_lines.append(line)
+                        continue
+                    entry_text = line.lstrip()
+                    date_value = entry_text.rsplit(" ", 1)[0].strip() if " " in entry_text else entry_text
+                    if not date_value or date_value in seen_dates:
+                        continue
+                    seen_dates.add(date_value)
+                    corrected_lines.append(line)
+                    continue
+                corrected_lines.append(line)
+            toc_path.write_text("\n".join(corrected_lines).rstrip() + "\n", encoding="utf-8")
+        except StopRequested:
+            success = None
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Correct TOC failed: {exc}")
+        else:
+            success = True
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "correct_toc",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
+            GLib.idle_add(self.show_toast, "Correct TOC complete.")
+        finally:
+            GLib.idle_add(self.step_correct_toc_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_correct_toc_row, success)
             GLib.idle_add(self._stop_status_if_idle)
             GLib.idle_add(self._stop_button_if_idle)
         return success is True
