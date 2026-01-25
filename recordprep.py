@@ -4112,9 +4112,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     entry_type = "hearing" if page_type in hearing_types else "minute_order"
                     end_file = file_name
                     last_number = page_number
+                    last_type = page_type
                     index += 1
                     while index < total:
                         self._raise_if_stop_requested()
+                        if entry_type == "hearing" and last_type == "hearing_page_last_page":
+                            break
                         next_file, next_type, next_number = entries[index]
                         if (
                             next_type not in expected_types
@@ -4123,7 +4126,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                             break
                         end_file = next_file
                         last_number = next_number
+                        last_type = next_type
                         index += 1
+                        if entry_type == "hearing" and last_type == "hearing_page_last_page":
+                            break
                     self._append_boundary_entry(
                         entry_type,
                         file_name,
@@ -4146,9 +4152,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 json.dumps(report_boundaries, indent=2),
                 encoding="utf-8",
             )
+            filtered_minutes: list[dict[str, str]] = []
+            seen_minute_dates: set[str] = set()
+            for entry in minutes_boundaries:
+                date_value = str(entry.get("date", "")).strip()
+                if not date_value or date_value in seen_minute_dates:
+                    continue
+                seen_minute_dates.add(date_value)
+                filtered_minutes.append(entry)
             minutes_path = derived_dir / "minutes_boundaries.json"
             minutes_path.write_text(
-                json.dumps(minutes_boundaries, indent=2),
+                json.dumps(filtered_minutes, indent=2),
                 encoding="utf-8",
             )
         except StopRequested:
@@ -4814,9 +4828,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             )
             return
         if page_type in {"report", "report_page"}:
+            report_name = report_name_by_file.get(start_file, "").strip()
+            if not report_name:
+                return
             report_boundaries.append(
                 {
-                    "report_name": report_name_by_file.get(start_file, ""),
+                    "report_name": report_name,
                     "start_page": start_page,
                     "end_page": end_page,
                 }
