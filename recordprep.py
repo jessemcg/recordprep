@@ -62,11 +62,12 @@ CONFIG_KEY_CASE_NAME_API_KEY = "case_name_api_key"
 CONFIG_KEY_CASE_NAME_PROMPT = "case_name_prompt"
 CONFIG_KEY_CASE_NAME = "case_name"
 CONFIG_KEY_CASE_ROOT_DIR = "case_root_dir"
-CONFIG_KEY_FORM_FILTER_API_URL = "form_filter_api_url"
-CONFIG_KEY_FORM_FILTER_MODEL_ID = "form_filter_model_id"
-CONFIG_KEY_FORM_FILTER_API_KEY = "form_filter_api_key"
-CONFIG_KEY_FORM_FILTER_PROMPT = "form_filter_prompt"
-CONFIG_KEY_REPORT_FILTER_PROMPT = "report_filter_prompt"
+CONFIG_KEY_ADVANCED_CLASSIFY_API_URL = "advanced_classify_api_url"
+CONFIG_KEY_ADVANCED_CLASSIFY_MODEL_ID = "advanced_classify_model_id"
+CONFIG_KEY_ADVANCED_CLASSIFY_API_KEY = "advanced_classify_api_key"
+CONFIG_KEY_ADVANCED_CLASSIFY_HEARING_PROMPT = "advanced_classify_hearing_prompt"
+CONFIG_KEY_ADVANCED_CLASSIFY_MINUTE_PROMPT = "advanced_classify_minute_prompt"
+CONFIG_KEY_ADVANCED_CLASSIFY_FORM_PROMPT = "advanced_classify_form_prompt"
 CONFIG_KEY_CLASSIFY_FORMS_API_URL = "classify_form_names_api_url"
 CONFIG_KEY_CLASSIFY_FORMS_MODEL_ID = "classify_form_names_model_id"
 CONFIG_KEY_CLASSIFY_FORMS_API_KEY = "classify_form_names_api_key"
@@ -121,17 +122,24 @@ DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT = (
     "report_name should be the formal report title if present. "
     "If unknown, use an empty string."
 )
-DEFAULT_FORM_FILTER_PROMPT = (
-    "You are reviewing a page labeled form_first_page in an OCR'd legal transcript. "
-    "Return JSON with keys: is_relevant. "
-    "is_relevant must be yes if and only if the page is one of the five specific forms we care about; "
-    "otherwise return no."
+DEFAULT_ADVANCED_HEARING_PROMPT = (
+    "You are reviewing a page labeled hearing_page in an OCR'd legal transcript. "
+    "Determine if this page is the last page of that hearing. "
+    "Look for cues like proceedings concluded, hearing concluded, adjourned, or off the record. "
+    "Return JSON with keys: is_last_page. "
+    "is_last_page must be yes or no."
 )
-DEFAULT_REPORT_FILTER_PROMPT = (
-    "You are reviewing a page labeled report in an OCR'd legal transcript. "
-    "Return JSON with keys: is_relevant. "
-    "is_relevant must be yes if and only if the report is one of the relevant report titles; "
-    "otherwise return no."
+DEFAULT_ADVANCED_MINUTE_PROMPT = (
+    "You are reviewing a page labeled minute_order_page in an OCR'd legal transcript. "
+    "Determine if this is the first page of the minute order (e.g., Page 1 of X). "
+    "Return JSON with keys: is_first_page. "
+    "is_first_page must be yes or no."
+)
+DEFAULT_ADVANCED_FORM_PROMPT = (
+    "You are reviewing a page labeled form_page in an OCR'd legal transcript. "
+    "Determine if this is the first page of the form (e.g., Page 1 of X). "
+    "Return JSON with keys: is_first_page. "
+    "is_first_page must be yes or no."
 )
 DEFAULT_CLASSIFY_FORM_NAMES_PROMPT = (
     "You are extracting the form name from a form_first_page in an OCR'd legal transcript. "
@@ -290,7 +298,12 @@ def _load_classify_date_targets(classify_path: Path) -> list[tuple[str, str]]:
                 continue
             entries.append((file_name, page_type, page_number))
     for file_name, page_type, page_number in entries:
-        if page_type in {"hearing_first_page", "minute_order_first_page"}:
+        if page_type in {
+            "hearing_first_page",
+            "hearing_page_first_page",
+            "minute_order_first_page",
+            "minute_order_page_first_page",
+        }:
             targets.append((file_name, page_type))
     return targets
 
@@ -322,8 +335,8 @@ def _load_classify_report_targets(classify_path: Path) -> list[tuple[str, str]]:
     prev_type: str | None = None
     prev_number: int | None = None
     for file_name, page_type, page_number in entries:
-        if page_type == "report":
-            if prev_type != "report" or prev_number is None or page_number != prev_number + 1:
+        if page_type in {"report", "report_page"}:
+            if prev_type not in {"report", "report_page"} or prev_number is None or page_number != prev_number + 1:
                 targets.append((file_name, page_type))
             prev_type = page_type
             prev_number = page_number
@@ -350,7 +363,7 @@ def _load_classify_form_targets(classify_path: Path) -> list[tuple[str, str]]:
                 continue
             file_name = str(payload.get("file_name", "") or "").strip()
             page_type = str(payload.get("page_type", "") or "").strip().lower()
-            if not file_name or page_type != "form_first_page":
+            if not file_name or page_type not in {"form_first_page", "form_page_first_page"}:
                 continue
             targets.append((file_name, page_type))
     return targets
@@ -926,6 +939,9 @@ def _write_manifest(
         "classification": {
             "basic": _relpath(classification_dir / "basic.jsonl"),
             "basic_corrected": _relpath(classification_dir / "basic_corrected.jsonl"),
+            "basic_corrected_advanced": _relpath(
+                classification_dir / "basic_corrected_advanced.jsonl"
+            ),
             "hearings_pages": _relpath(classification_dir / "hearings_pages.jsonl"),
             "minute_order_pages": _relpath(classification_dir / "minute_order_pages.jsonl"),
             "report_pages": _relpath(classification_dir / "report_pages.jsonl"),
@@ -1021,37 +1037,53 @@ def load_classify_further_settings() -> dict[str, str]:
     }
 
 
-def load_form_filter_settings() -> dict[str, str]:
+def load_advanced_classify_settings() -> dict[str, str]:
     config = _read_config()
-    api_url = str(config.get(CONFIG_KEY_FORM_FILTER_API_URL, "") or "").strip()
-    model_id = str(config.get(CONFIG_KEY_FORM_FILTER_MODEL_ID, "") or "").strip()
-    api_key = str(config.get(CONFIG_KEY_FORM_FILTER_API_KEY, "") or "").strip()
-    prompt = str(config.get(CONFIG_KEY_FORM_FILTER_PROMPT, DEFAULT_FORM_FILTER_PROMPT) or "").strip()
-    report_prompt = str(
-        config.get(CONFIG_KEY_REPORT_FILTER_PROMPT, DEFAULT_REPORT_FILTER_PROMPT) or ""
+    api_url = str(config.get(CONFIG_KEY_ADVANCED_CLASSIFY_API_URL, "") or "").strip()
+    model_id = str(config.get(CONFIG_KEY_ADVANCED_CLASSIFY_MODEL_ID, "") or "").strip()
+    api_key = str(config.get(CONFIG_KEY_ADVANCED_CLASSIFY_API_KEY, "") or "").strip()
+    hearing_prompt = str(
+        config.get(CONFIG_KEY_ADVANCED_CLASSIFY_HEARING_PROMPT, DEFAULT_ADVANCED_HEARING_PROMPT)
+        or ""
+    ).strip()
+    minute_prompt = str(
+        config.get(CONFIG_KEY_ADVANCED_CLASSIFY_MINUTE_PROMPT, DEFAULT_ADVANCED_MINUTE_PROMPT)
+        or ""
+    ).strip()
+    form_prompt = str(
+        config.get(CONFIG_KEY_ADVANCED_CLASSIFY_FORM_PROMPT, DEFAULT_ADVANCED_FORM_PROMPT) or ""
     ).strip()
     return {
         "api_url": api_url,
         "model_id": model_id,
         "api_key": api_key,
-        "prompt": prompt or DEFAULT_FORM_FILTER_PROMPT,
-        "report_prompt": report_prompt or DEFAULT_REPORT_FILTER_PROMPT,
+        "hearing_prompt": hearing_prompt or DEFAULT_ADVANCED_HEARING_PROMPT,
+        "minute_prompt": minute_prompt or DEFAULT_ADVANCED_MINUTE_PROMPT,
+        "form_prompt": form_prompt or DEFAULT_ADVANCED_FORM_PROMPT,
     }
 
 
-def save_form_filter_settings(
+def save_advanced_classify_settings(
     api_url: str,
     model_id: str,
     api_key: str,
-    prompt: str,
-    report_prompt: str,
+    hearing_prompt: str,
+    minute_prompt: str,
+    form_prompt: str,
 ) -> None:
     config = _read_config()
-    config[CONFIG_KEY_FORM_FILTER_API_URL] = api_url
-    config[CONFIG_KEY_FORM_FILTER_MODEL_ID] = model_id
-    config[CONFIG_KEY_FORM_FILTER_API_KEY] = api_key
-    config[CONFIG_KEY_FORM_FILTER_PROMPT] = prompt or DEFAULT_FORM_FILTER_PROMPT
-    config[CONFIG_KEY_REPORT_FILTER_PROMPT] = report_prompt or DEFAULT_REPORT_FILTER_PROMPT
+    config[CONFIG_KEY_ADVANCED_CLASSIFY_API_URL] = api_url
+    config[CONFIG_KEY_ADVANCED_CLASSIFY_MODEL_ID] = model_id
+    config[CONFIG_KEY_ADVANCED_CLASSIFY_API_KEY] = api_key
+    config[CONFIG_KEY_ADVANCED_CLASSIFY_HEARING_PROMPT] = (
+        hearing_prompt or DEFAULT_ADVANCED_HEARING_PROMPT
+    )
+    config[CONFIG_KEY_ADVANCED_CLASSIFY_MINUTE_PROMPT] = (
+        minute_prompt or DEFAULT_ADVANCED_MINUTE_PROMPT
+    )
+    config[CONFIG_KEY_ADVANCED_CLASSIFY_FORM_PROMPT] = (
+        form_prompt or DEFAULT_ADVANCED_FORM_PROMPT
+    )
     _write_config(config)
 
 
@@ -1262,12 +1294,13 @@ class ClassifyFurtherSettingsWidgets:
 
 
 @dataclass
-class ClassifyFilterSettingsWidgets:
+class AdvancedClassificationSettingsWidgets:
     api_url_row: Adw.EntryRow
     model_row: Adw.EntryRow
     api_key_row: Adw.EntryRow
+    hearing_prompt_buffer: Gtk.TextBuffer
+    minute_prompt_buffer: Gtk.TextBuffer
     form_prompt_buffer: Gtk.TextBuffer
-    report_prompt_buffer: Gtk.TextBuffer
 
 
 @dataclass
@@ -1463,7 +1496,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._on_saved = on_saved
         self._prompt_editors: dict[str, ClassifySettingsWidgets] = {}
         self._classify_further_widgets: ClassifyFurtherSettingsWidgets | None = None
-        self._classify_filter_widgets: ClassifyFilterSettingsWidgets | None = None
+        self._advanced_classify_widgets: AdvancedClassificationSettingsWidgets | None = None
         self._prompt_row_keys: dict[Gtk.ListBoxRow, str] = {}
         self._build_ui()
 
@@ -1568,19 +1601,19 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         prompt_stack.add_named(classify_page, "classify-basic")
 
-        classify_filter_row = Gtk.ListBoxRow()
-        classify_filter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        classify_filter_box.set_margin_top(8)
-        classify_filter_box.set_margin_bottom(8)
-        classify_filter_box.set_margin_start(12)
-        classify_filter_box.set_margin_end(12)
-        classify_filter_label = Gtk.Label(label="Classification filter", xalign=0)
-        classify_filter_box.append(classify_filter_label)
-        classify_filter_row.set_child(classify_filter_box)
-        prompt_list.append(classify_filter_row)
-        self._prompt_row_keys[classify_filter_row] = "classify-filter"
-        classify_filter_page = self._build_classify_filter_prompt_page()
-        prompt_stack.add_named(classify_filter_page, "classify-filter")
+        classify_advanced_row = Gtk.ListBoxRow()
+        classify_advanced_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        classify_advanced_box.set_margin_top(8)
+        classify_advanced_box.set_margin_bottom(8)
+        classify_advanced_box.set_margin_start(12)
+        classify_advanced_box.set_margin_end(12)
+        classify_advanced_label = Gtk.Label(label="Advanced classification", xalign=0)
+        classify_advanced_box.append(classify_advanced_label)
+        classify_advanced_row.set_child(classify_advanced_box)
+        prompt_list.append(classify_advanced_row)
+        self._prompt_row_keys[classify_advanced_row] = "classify-advanced"
+        classify_advanced_page = self._build_advanced_classify_prompt_page()
+        prompt_stack.add_named(classify_advanced_page, "classify-advanced")
 
         classify_further_row = Gtk.ListBoxRow()
         classify_further_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -1764,8 +1797,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         return page
 
-    def _build_classify_filter_prompt_page(self) -> Gtk.Widget:
-        settings = load_form_filter_settings()
+    def _build_advanced_classify_prompt_page(self) -> Gtk.Widget:
+        settings = load_advanced_classify_settings()
 
         page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         page_box.set_margin_top(12)
@@ -1774,7 +1807,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         page_box.set_margin_end(12)
         page_box.set_vexpand(True)
 
-        title_label = Gtk.Label(label="Classification filter", xalign=0)
+        title_label = Gtk.Label(label="Advanced classification", xalign=0)
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
@@ -1799,21 +1832,29 @@ class SettingsWindow(Adw.ApplicationWindow):
         prompt_section.set_hexpand(True)
         prompt_section.set_vexpand(True)
 
-        forms_label = Gtk.Label(label="Form Relevance Prompt", xalign=0)
+        hearing_label = Gtk.Label(label="Hearing Last Page Prompt", xalign=0)
+        hearing_label.add_css_class("dim-label")
+        prompt_section.append(hearing_label)
+        hearing_scroller, hearing_buffer = self._build_prompt_editor(
+            settings.get("hearing_prompt") or DEFAULT_ADVANCED_HEARING_PROMPT
+        )
+        prompt_section.append(hearing_scroller)
+
+        minute_label = Gtk.Label(label="Minute Order First Page Prompt", xalign=0)
+        minute_label.add_css_class("dim-label")
+        prompt_section.append(minute_label)
+        minute_scroller, minute_buffer = self._build_prompt_editor(
+            settings.get("minute_prompt") or DEFAULT_ADVANCED_MINUTE_PROMPT
+        )
+        prompt_section.append(minute_scroller)
+
+        forms_label = Gtk.Label(label="Form First Page Prompt", xalign=0)
         forms_label.add_css_class("dim-label")
         prompt_section.append(forms_label)
         forms_scroller, forms_buffer = self._build_prompt_editor(
-            settings.get("prompt") or DEFAULT_FORM_FILTER_PROMPT
+            settings.get("form_prompt") or DEFAULT_ADVANCED_FORM_PROMPT
         )
         prompt_section.append(forms_scroller)
-
-        reports_label = Gtk.Label(label="Report Relevance Prompt", xalign=0)
-        reports_label.add_css_class("dim-label")
-        prompt_section.append(reports_label)
-        reports_scroller, reports_buffer = self._build_prompt_editor(
-            settings.get("report_prompt") or DEFAULT_REPORT_FILTER_PROMPT
-        )
-        prompt_section.append(reports_scroller)
 
         page_box.append(prompt_section)
 
@@ -1823,12 +1864,13 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.set_vexpand(True)
         page.set_child(page_box)
 
-        self._classify_filter_widgets = ClassifyFilterSettingsWidgets(
+        self._advanced_classify_widgets = AdvancedClassificationSettingsWidgets(
             api_url_row=api_url_row,
             model_row=model_row,
             api_key_row=api_key_row,
+            hearing_prompt_buffer=hearing_buffer,
+            minute_prompt_buffer=minute_buffer,
             form_prompt_buffer=forms_buffer,
-            report_prompt_buffer=reports_buffer,
         )
         return page
 
@@ -2170,7 +2212,7 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _save_settings(self) -> None:
         case_widgets = self._prompt_editors.get("case-name")
         classify_basic_widgets = self._prompt_editors.get("classify-basic")
-        classify_filter_widgets = self._classify_filter_widgets
+        advanced_classify_widgets = self._advanced_classify_widgets
         classify_further_widgets = self._classify_further_widgets
         optimize_widgets = getattr(self, "_optimize_widgets", None)
         summarize_widgets = getattr(self, "_summarize_widgets", None)
@@ -2190,13 +2232,14 @@ class SettingsWindow(Adw.ApplicationWindow):
                 classify_basic_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(classify_basic_widgets.prompt_buffer).strip(),
             )
-        if classify_filter_widgets:
-            save_form_filter_settings(
-                classify_filter_widgets.api_url_row.get_text().strip(),
-                classify_filter_widgets.model_row.get_text().strip(),
-                classify_filter_widgets.api_key_row.get_text().strip(),
-                self._prompt_text(classify_filter_widgets.form_prompt_buffer).strip(),
-                self._prompt_text(classify_filter_widgets.report_prompt_buffer).strip(),
+        if advanced_classify_widgets:
+            save_advanced_classify_settings(
+                advanced_classify_widgets.api_url_row.get_text().strip(),
+                advanced_classify_widgets.model_row.get_text().strip(),
+                advanced_classify_widgets.api_key_row.get_text().strip(),
+                self._prompt_text(advanced_classify_widgets.hearing_prompt_buffer).strip(),
+                self._prompt_text(advanced_classify_widgets.minute_prompt_buffer).strip(),
+                self._prompt_text(advanced_classify_widgets.form_prompt_buffer).strip(),
             )
         if classify_further_widgets:
             api_url = classify_further_widgets.api_url_row.get_text().strip()
@@ -2357,14 +2400,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._attach_step_status(self.step_correct_basic_row)
         self.step_list.append(self.step_correct_basic_row)
 
-        self.step_filter_row = Adw.ActionRow(
-            title="Classification filter",
-            subtitle="Identify relevant forms from form first pages.",
+        self.step_advanced_row = Adw.ActionRow(
+            title="Advanced classification",
+            subtitle="Refine hearing, minute order, and form page types.",
         )
-        self.step_filter_row.set_activatable(True)
-        self.step_filter_row.connect("activated", self.on_step_filter_clicked)
-        self._attach_step_status(self.step_filter_row)
-        self.step_list.append(self.step_filter_row)
+        self.step_advanced_row.set_activatable(True)
+        self.step_advanced_row.connect("activated", self.on_step_advanced_clicked)
+        self._attach_step_status(self.step_advanced_row)
+        self.step_list.append(self.step_advanced_row)
 
         self.step_three_row = Adw.ActionRow(
             title="Classification dates/names",
@@ -2607,7 +2650,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ("infer_case", self.step_infer_case_row, self._run_step_infer_case),
             ("classify_basic", self.step_two_row, self._run_step_two),
             ("correct_basic", self.step_correct_basic_row, self._run_step_correct_basic),
-            ("classify_filter", self.step_filter_row, self._run_step_filter),
+            ("classify_advanced", self.step_advanced_row, self._run_step_advanced),
             ("classify_further", self.step_three_row, self._run_step_three),
             ("build_toc", self.step_six_row, self._run_step_six),
             ("find_boundaries", self.step_seven_row, self._run_step_seven),
@@ -2654,6 +2697,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             last_failed = "classify_basic"
         if last_completed == "classify":
             last_completed = "classify_further"
+        if last_failed == "classify_filter":
+            last_failed = "classify_advanced"
+        if last_completed == "classify_filter":
+            last_completed = "classify_advanced"
         if isinstance(last_failed, str) and last_failed in step_ids:
             return step_ids.index(last_failed)
         if isinstance(last_completed, str) and last_completed in step_ids:
@@ -2896,7 +2943,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._start_step(self.step_two_row)
         threading.Thread(target=self._run_step_two, daemon=True).start()
 
-    def on_step_filter_clicked(self, _row: Adw.ActionRow) -> None:
+    def on_step_advanced_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
         if root_dir is None:
             if self.selected_pdfs:
@@ -2906,9 +2953,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
-        self.step_filter_row.set_sensitive(False)
-        self._start_step(self.step_filter_row)
-        threading.Thread(target=self._run_step_filter, daemon=True).start()
+        self.step_advanced_row.set_sensitive(False)
+        self._start_step(self.step_advanced_row)
+        threading.Thread(target=self._run_step_advanced, daemon=True).start()
 
     def on_step_correct_basic_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -3107,19 +3154,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             classification_dir.mkdir(parents=True, exist_ok=True)
             classify_basic_path = classification_dir / "basic.jsonl"
             classify_basic_path.touch(exist_ok=True)
-            hearings_pages_path = classification_dir / "hearings_pages.jsonl"
-            minute_order_pages_path = classification_dir / "minute_order_pages.jsonl"
-            report_pages_path = classification_dir / "report_pages.jsonl"
-            form_pages_path = classification_dir / "form_pages.jsonl"
-            hearings_pages_path.touch(exist_ok=True)
-            minute_order_pages_path.touch(exist_ok=True)
-            report_pages_path.touch(exist_ok=True)
-            form_pages_path.touch(exist_ok=True)
             done_basic = _load_jsonl_file_names(classify_basic_path)
-            done_hearings = _load_jsonl_file_names(hearings_pages_path)
-            done_minutes = _load_jsonl_file_names(minute_order_pages_path)
-            done_reports = _load_jsonl_file_names(report_pages_path)
-            done_forms = _load_jsonl_file_names(form_pages_path)
             text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)
             if not text_files:
                 raise FileNotFoundError("No text files found to classify.")
@@ -3139,48 +3174,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     handle.write(json.dumps(entry))
                     handle.write("\n")
                 done_basic.add(text_path.name)
-                page_number = _extract_page_number(text_path.name)
-                if page_number is None:
-                    continue
-                page_type = str(entry.get("page_type", "") or "").strip().lower()
-                page_type = page_type.replace(" ", "_")
-                page_type = {
-                    "hearing": "hearing_page",
-                    "hearing_first_page": "hearing_page",
-                    "minute_order": "minute_order_page",
-                    "minute_order_first_page": "minute_order_page",
-                    "report": "report_page",
-                    "form": "form_page",
-                    "form_first_page": "form_page",
-                }.get(page_type, page_type)
-                if page_type == "hearing_page" and text_path.name not in done_hearings:
-                    with hearings_pages_path.open("a", encoding="utf-8") as handle:
-                        handle.write(
-                            json.dumps({"file_name": text_path.name, "page_number": page_number})
-                        )
-                        handle.write("\n")
-                    done_hearings.add(text_path.name)
-                elif page_type == "minute_order_page" and text_path.name not in done_minutes:
-                    with minute_order_pages_path.open("a", encoding="utf-8") as handle:
-                        handle.write(
-                            json.dumps({"file_name": text_path.name, "page_number": page_number})
-                        )
-                        handle.write("\n")
-                    done_minutes.add(text_path.name)
-                elif page_type == "report_page" and text_path.name not in done_reports:
-                    with report_pages_path.open("a", encoding="utf-8") as handle:
-                        handle.write(
-                            json.dumps({"file_name": text_path.name, "page_number": page_number})
-                        )
-                        handle.write("\n")
-                    done_reports.add(text_path.name)
-                elif page_type == "form_page" and text_path.name not in done_forms:
-                    with form_pages_path.open("a", encoding="utf-8") as handle:
-                        handle.write(
-                            json.dumps({"file_name": text_path.name, "page_number": page_number})
-                        )
-                        handle.write("\n")
-                    done_forms.add(text_path.name)
         except StopRequested:
             success = None
         except Exception as exc:
@@ -3228,108 +3221,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             corrected = list(page_types)
             total = len(corrected)
 
-            def is_hearing(value: str) -> bool:
-                return value == "hearing"
+            def _bridge_page_type(target: str) -> None:
+                for index in range(1, total - 1):
+                    self._raise_if_stop_requested()
+                    if corrected[index - 1] == target and corrected[index + 1] == target:
+                        if corrected[index] != target:
+                            corrected[index] = target
 
-            def is_hearing_like(value: str) -> bool:
-                return value in {"hearing", "hearing_first_page"}
-
-            def is_report(value: str) -> bool:
-                return value == "report"
-
-            def is_cover_or_index(value: str) -> bool:
-                return value in {"cover", "index"}
-
-            index = 0
-            while index < total:
-                self._raise_if_stop_requested()
-                if index + 1 < total and not is_hearing_like(
-                    corrected[index]
-                ) and not is_hearing_like(corrected[index + 1]):
-                    if (
-                        index - 2 >= 0
-                        and index + 3 < total
-                        and all(
-                            is_hearing_like(corrected[i]) for i in range(index - 2, index)
-                        )
-                        and all(
-                            is_hearing_like(corrected[i])
-                            for i in range(index + 2, index + 4)
-                        )
-                    ):
-                        corrected[index] = "hearing"
-                        corrected[index + 1] = "hearing"
-                        index += 2
-                        continue
-                if not is_hearing_like(corrected[index]):
-                    if (
-                        index - 2 >= 0
-                        and index + 2 < total
-                        and all(
-                            is_hearing_like(corrected[i]) for i in range(index - 2, index)
-                        )
-                        and all(
-                            is_hearing_like(corrected[i])
-                            for i in range(index + 1, index + 3)
-                        )
-                    ):
-                        corrected[index] = "hearing"
-                index += 1
-
-            for index in range(1, total - 1):
-                self._raise_if_stop_requested()
-                if (
-                    corrected[index] == "hearing_first_page"
-                    and is_cover_or_index(corrected[index - 1])
-                    and is_cover_or_index(corrected[index + 1])
-                ):
-                    corrected[index] = "cover"
-
-            index = 0
-            while index < total:
-                self._raise_if_stop_requested()
-                if corrected[index] != "hearing":
-                    index += 1
-                    continue
-                start = index
-                while index < total and corrected[index] == "hearing":
-                    index += 1
-                if index - start >= 2 and start > 0 and is_cover_or_index(corrected[start - 1]):
-                    corrected[start] = "hearing_first_page"
-
-            for index in range(2, total - 2):
-                self._raise_if_stop_requested()
-                if not is_report(corrected[index]):
-                    if (
-                        is_report(corrected[index - 1])
-                        and is_report(corrected[index - 2])
-                        and is_report(corrected[index + 1])
-                        and is_report(corrected[index + 2])
-                    ):
-                        corrected[index] = "report"
-
-            for index in range(1, total - 1):
-                self._raise_if_stop_requested()
-                if (
-                    corrected[index] == "minute_order"
-                    and corrected[index - 1] not in {"minute_order", "minute_order_first_page"}
-                    and corrected[index + 1] not in {"minute_order", "minute_order_first_page"}
-                ):
-                    corrected[index] = "minute_order_first_page"
-
-            index = 0
-            while index < total:
-                self._raise_if_stop_requested()
-                if corrected[index] != "minute_order":
-                    index += 1
-                    continue
-                start = index
-                while index < total and corrected[index] == "minute_order":
-                    index += 1
-                if index - start >= 2:
-                    prev = corrected[start - 1] if start > 0 else ""
-                    if prev not in {"minute_order", "minute_order_first_page"}:
-                        corrected[start] = "minute_order_first_page"
+            _bridge_page_type("hearing_page")
+            _bridge_page_type("report_page")
+            _bridge_page_type("minute_order")
 
             corrections = 0
             for entry, new_type, old_type in zip(entries, corrected, page_types):
@@ -3367,7 +3268,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._stop_button_if_idle)
         return success is True
 
-    def _run_step_filter(self) -> bool:
+    def _run_step_advanced(self) -> bool:
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
@@ -3385,100 +3286,103 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise FileNotFoundError(
                     "Run Correct basic classification to generate corrected classifications first."
                 )
-            filter_settings = load_form_filter_settings()
-            if (
-                not filter_settings["api_url"]
-                or not filter_settings["model_id"]
-                or not filter_settings["api_key"]
-            ):
+            settings = load_advanced_classify_settings()
+            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError(
-                    "Configure classification filter API URL, model ID, and API key in Settings."
+                    "Configure advanced classification API URL, model ID, and API key in Settings."
                 )
+            entries = _load_jsonl_entries(classify_basic_path)
+            if not entries:
+                raise FileNotFoundError("No entries found in basic_corrected.jsonl.")
+
+            def _maybe_update_page_type(
+                entry: dict[str, Any],
+                target_types: tuple[str, ...],
+                updated_type: str,
+                prompt: str,
+                truthy_keys: tuple[str, ...],
+            ) -> bool:
+                page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                if page_type not in target_types:
+                    return False
+                file_name = _extract_entry_value(entry, "file_name", "filename")
+                if not file_name:
+                    return False
+                text_path = text_dir / file_name
+                if not text_path.exists():
+                    raise FileNotFoundError(
+                        f"Missing text file {file_name} for advanced classification."
+                    )
+                content = text_path.read_text(encoding="utf-8", errors="ignore")
+                payload = {
+                    "api_url": settings["api_url"],
+                    "model_id": settings["model_id"],
+                    "api_key": settings["api_key"],
+                    "prompt": prompt,
+                }
+                response = self._classify_text(payload, file_name, content)
+                if _is_truthy(_extract_entry_value(response, *truthy_keys)):
+                    entry["page_type"] = updated_type
+                    return True
+                return False
+
+            updates = 0
+            for entry in entries:
+                self._raise_if_stop_requested()
+                if _maybe_update_page_type(
+                    entry,
+                    ("hearing_page", "hearing"),
+                    "hearing_page_last_page",
+                    settings["hearing_prompt"],
+                    ("is_last_page", "last_page", "last", "is_last"),
+                ):
+                    updates += 1
+                    continue
+                if _maybe_update_page_type(
+                    entry,
+                    ("minute_order_page", "minute_order"),
+                    "minute_order_page_first_page",
+                    settings["minute_prompt"],
+                    ("is_first_page", "first_page", "first", "is_first"),
+                ):
+                    updates += 1
+                    continue
+                if _maybe_update_page_type(
+                    entry,
+                    ("form_page", "form"),
+                    "form_page_first_page",
+                    settings["form_prompt"],
+                    ("is_first_page", "first_page", "first", "is_first"),
+                ):
+                    updates += 1
+
             classification_dir.mkdir(parents=True, exist_ok=True)
-            relevant_forms_path = classification_dir / "relevant_forms.jsonl"
-            relevant_forms_path.touch(exist_ok=True)
-            done_relevant = _load_jsonl_file_names(relevant_forms_path)
-            form_targets = _load_classify_form_targets(classify_basic_path)
-            if form_targets:
-                filter_payload = {
-                    "api_url": filter_settings["api_url"],
-                    "model_id": filter_settings["model_id"],
-                    "api_key": filter_settings["api_key"],
-                    "prompt": filter_settings["prompt"],
-                }
-                for file_name, _page_type in form_targets:
-                    self._raise_if_stop_requested()
-                    if file_name in done_relevant:
-                        continue
-                    text_path = text_dir / file_name
-                    if not text_path.exists():
-                        raise FileNotFoundError(
-                            f"Missing text file {file_name} for form filter classification."
-                        )
-                    content = text_path.read_text(encoding="utf-8", errors="ignore")
-                    entry = self._classify_text(filter_payload, file_name, content)
-                    is_relevant = _is_truthy(_extract_entry_value(entry, "is_relevant", "relevant", "keep"))
-                    if not is_relevant:
-                        continue
-                    ordered_entry: dict[str, str | int] = {"file_name": file_name}
-                    page_number = _extract_page_number(file_name)
-                    if page_number is not None:
-                        ordered_entry["page_number"] = page_number
-                    with relevant_forms_path.open("a", encoding="utf-8") as handle:
-                        handle.write(json.dumps(ordered_entry))
-                        handle.write("\n")
-                    done_relevant.add(file_name)
-            relevant_reports_path = classification_dir / "relevant_reports.jsonl"
-            relevant_reports_path.touch(exist_ok=True)
-            done_reports = _load_jsonl_file_names(relevant_reports_path)
-            report_targets = _load_classify_report_targets(classify_basic_path)
-            if report_targets:
-                report_payload = {
-                    "api_url": filter_settings["api_url"],
-                    "model_id": filter_settings["model_id"],
-                    "api_key": filter_settings["api_key"],
-                    "prompt": filter_settings["report_prompt"],
-                }
-                for file_name, _page_type in report_targets:
-                    self._raise_if_stop_requested()
-                    if file_name in done_reports:
-                        continue
-                    text_path = text_dir / file_name
-                    if not text_path.exists():
-                        raise FileNotFoundError(
-                            f"Missing text file {file_name} for report filter classification."
-                        )
-                    content = text_path.read_text(encoding="utf-8", errors="ignore")
-                    entry = self._classify_text(report_payload, file_name, content)
-                    is_relevant = _is_truthy(_extract_entry_value(entry, "is_relevant", "relevant", "keep"))
-                    if not is_relevant:
-                        continue
-                    ordered_entry = {"file_name": file_name}
-                    page_number = _extract_page_number(file_name)
-                    if page_number is not None:
-                        ordered_entry["page_number"] = page_number
-                    with relevant_reports_path.open("a", encoding="utf-8") as handle:
-                        handle.write(json.dumps(ordered_entry))
-                        handle.write("\n")
-                    done_reports.add(file_name)
+            advanced_path = classification_dir / "basic_corrected_advanced.jsonl"
+            with advanced_path.open("w", encoding="utf-8") as handle:
+                for entry in entries:
+                    handle.write(json.dumps(entry))
+                    handle.write("\n")
         except StopRequested:
             success = None
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Classification filter failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Advanced classification failed: {exc}")
         else:
             success = True
             self._safe_update_manifest(
                 root_dir,
                 {
-                    "last_completed_step": "classify_filter",
+                    "last_completed_step": "classify_advanced",
                     "last_failed_step": None,
                     "last_failed_at": None,
                 },
             )
-            GLib.idle_add(self.show_toast, "Classification filter complete.")
+            GLib.idle_add(
+                self.show_toast,
+                f"Advanced classification complete. {updates} updates applied.",
+            )
         finally:
-            GLib.idle_add(self.step_filter_row.set_sensitive, True)
-            GLib.idle_add(self._finish_step, self.step_filter_row, success)
+            GLib.idle_add(self.step_advanced_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_advanced_row, success)
             GLib.idle_add(self._stop_status_if_idle)
             GLib.idle_add(self._stop_button_if_idle)
         return success is True
@@ -3496,20 +3400,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
             classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "basic_corrected.jsonl"
+            classify_basic_path = classification_dir / "basic_corrected_advanced.jsonl"
             if not classify_basic_path.exists():
                 raise FileNotFoundError(
-                    "Run Correct basic classification to generate corrected classifications first."
-                )
-            relevant_forms_path = classification_dir / "relevant_forms.jsonl"
-            if not relevant_forms_path.exists():
-                raise FileNotFoundError(
-                    "Run Classification filter to generate relevant form classifications first."
-                )
-            relevant_reports_path = classification_dir / "relevant_reports.jsonl"
-            if not relevant_reports_path.exists():
-                raise FileNotFoundError(
-                    "Run Classification filter to generate relevant report classifications first."
+                    "Run Advanced classification to generate advanced corrections first."
                 )
             further_settings = load_classify_further_settings()
             if (
@@ -3556,7 +3450,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             classify_report_names_path = classification_dir / "report_names.jsonl"
             classify_report_names_path.touch(exist_ok=True)
             done_reports = _load_jsonl_file_names(classify_report_names_path)
-            report_targets = _load_relevant_report_targets(relevant_reports_path)
+            report_targets = _load_classify_report_targets(classify_basic_path)
             if report_targets:
                 report_settings_payload = {
                     "api_url": further_settings["api_url"],
@@ -3564,7 +3458,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "api_key": further_settings["api_key"],
                     "prompt": further_settings["reports_prompt"],
                 }
-                for file_name in report_targets:
+                for file_name, _page_type in report_targets:
                     self._raise_if_stop_requested()
                     if file_name in done_reports:
                         continue
@@ -3588,7 +3482,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             classify_form_names_path = classification_dir / "form_names.jsonl"
             classify_form_names_path.touch(exist_ok=True)
             done_forms = _load_jsonl_file_names(classify_form_names_path)
-            form_targets = _load_relevant_form_targets(relevant_forms_path)
+            form_targets = _load_classify_form_targets(classify_basic_path)
             if form_targets:
                 form_settings_payload = {
                     "api_url": further_settings["api_url"],
@@ -3596,7 +3490,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "api_key": further_settings["api_key"],
                     "prompt": further_settings["forms_prompt"],
                 }
-                for file_name in form_targets:
+                for file_name, _page_type in form_targets:
                     self._raise_if_stop_requested()
                     if file_name in done_forms:
                         continue
@@ -3649,7 +3543,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Choose PDF files or select a saved case first.")
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
-            classify_basic_path = classification_dir / "basic_corrected.jsonl"
+            classify_basic_path = classification_dir / "basic_corrected_advanced.jsonl"
             classify_dates_path = classification_dir / "dates.jsonl"
             classify_report_names_path = classification_dir / "report_names.jsonl"
             classify_form_names_path = classification_dir / "form_names.jsonl"
@@ -3661,7 +3555,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ):
                 if not path.exists():
                     raise FileNotFoundError(
-                        "Run Correct basic classification, filter, and dates/names to generate classify JSONL files first."
+                        "Run Advanced classification and dates/names to generate classify JSONL files first."
                     )
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_entries = _load_jsonl_entries(classify_dates_path)
@@ -3709,9 +3603,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 date_value = date_by_file.get(file_name, "").strip()
                 page = _page_label_from_filename(file_name)
                 line = _format_toc_line(date_value, page)
-                if page_type == "minute_order_first_page":
+                if page_type in {"minute_order_first_page", "minute_order_page_first_page"}:
                     minute_order_lines.append(line)
-                elif page_type == "hearing_first_page":
+                elif page_type in {"hearing_first_page", "hearing_page_first_page"}:
                     hearing_lines.append(line)
             toc_lines: list[str] = [
                 "FORMS",
@@ -3761,19 +3655,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Choose PDF files or select a saved case first.")
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
-            classify_basic_path = classification_dir / "basic_corrected.jsonl"
+            classify_basic_path = classification_dir / "basic_corrected_advanced.jsonl"
             classify_dates_path = classification_dir / "dates.jsonl"
             classify_report_names_path = classification_dir / "report_names.jsonl"
-            relevant_reports_path = classification_dir / "relevant_reports.jsonl"
             for path in (classify_basic_path, classify_dates_path, classify_report_names_path):
                 if not path.exists():
                     raise FileNotFoundError(
-                        "Run Correct basic classification, filter, and dates/names to generate classify JSONL files first."
+                        "Run Advanced classification and dates/names to generate classify JSONL files first."
                     )
-            if not relevant_reports_path.exists():
-                raise FileNotFoundError(
-                    "Run Classification filter to generate relevant report classifications first."
-                )
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_by_file: dict[str, str] = {}
             for entry in _load_jsonl_entries(classify_dates_path):
@@ -3791,19 +3680,19 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 report_name = _extract_entry_value(entry, "report_name", "report", "name")
                 if file_name and report_name:
                     report_name_by_file[file_name] = report_name
-            relevant_report_files = set(_load_relevant_report_targets(relevant_reports_path))
+            relevant_report_files: set[str] | None = None
             hearing_boundaries: list[dict[str, str]] = []
             report_boundaries: list[dict[str, str]] = []
             minutes_boundaries: list[dict[str, str]] = []
             entries = _load_classify_basic_entries(classify_basic_path)
             if not entries:
-                raise FileNotFoundError("No entries found in basic_corrected.jsonl.")
+                raise FileNotFoundError("No entries found in basic_corrected_advanced.jsonl.")
             current_report_start: str | None = None
             current_report_end: str | None = None
             report_sequence_relevant = False
             for file_name, page_type, page_number in entries:
                 self._raise_if_stop_requested()
-                if page_type != "report":
+                if page_type not in {"report", "report_page"}:
                     if current_report_start:
                         if report_sequence_relevant:
                             self._append_boundary_entry(
@@ -3840,7 +3729,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                             )
                     current_report_start = file_name
                     current_report_end = file_name
-                    report_sequence_relevant = file_name in relevant_report_files
+                    report_sequence_relevant = (
+                        True
+                        if relevant_report_files is None
+                        else file_name in relevant_report_files
+                    )
             if current_report_start:
                 if report_sequence_relevant:
                     self._append_boundary_entry(
@@ -3854,17 +3747,27 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         minutes_boundaries,
                     )
 
+            hearing_types = {
+                "hearing",
+                "hearing_first_page",
+                "hearing_page",
+                "hearing_page_first_page",
+                "hearing_page_last_page",
+            }
+            minute_types = {
+                "minute_order",
+                "minute_order_first_page",
+                "minute_order_page",
+                "minute_order_page_first_page",
+            }
             index = 0
             total = len(entries)
             while index < total:
                 self._raise_if_stop_requested()
                 file_name, page_type, page_number = entries[index]
-                if page_type in {"hearing_first_page", "minute_order_first_page"}:
-                    expected_follow_type = (
-                        "hearing"
-                        if page_type == "hearing_first_page"
-                        else "minute_order"
-                    )
+                if page_type in hearing_types or page_type in minute_types:
+                    expected_types = hearing_types if page_type in hearing_types else minute_types
+                    entry_type = "hearing" if page_type in hearing_types else "minute_order"
                     end_file = file_name
                     last_number = page_number
                     index += 1
@@ -3872,7 +3775,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         self._raise_if_stop_requested()
                         next_file, next_type, next_number = entries[index]
                         if (
-                            next_type != expected_follow_type
+                            next_type not in expected_types
                             or next_number != last_number + 1
                         ):
                             break
@@ -3880,7 +3783,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         last_number = next_number
                         index += 1
                     self._append_boundary_entry(
-                        page_type,
+                        entry_type,
                         file_name,
                         end_file,
                         date_by_file,
@@ -4554,7 +4457,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         start_page = _page_label_from_filename(start_file)
         end_page = _page_label_from_filename(end_file)
-        if page_type in {"hearing", "hearing_first_page"}:
+        if page_type in {
+            "hearing",
+            "hearing_first_page",
+            "hearing_page",
+            "hearing_page_last_page",
+        }:
             hearing_boundaries.append(
                 {
                     "date": date_by_file.get(start_file, ""),
@@ -4563,7 +4471,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 }
             )
             return
-        if page_type == "report":
+        if page_type in {"report", "report_page"}:
             report_boundaries.append(
                 {
                     "report_name": report_name_by_file.get(start_file, ""),
@@ -4572,7 +4480,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 }
             )
             return
-        if page_type in {"minute_order", "minute_order_first_page"}:
+        if page_type in {
+            "minute_order",
+            "minute_order_first_page",
+            "minute_order_page",
+            "minute_order_page_first_page",
+        }:
             minutes_boundaries.append(
                 {
                     "date": date_by_file.get(start_file, ""),
