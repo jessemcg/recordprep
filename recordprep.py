@@ -93,12 +93,20 @@ CONFIG_KEY_RAG_VOYAGE_MODEL = "rag_voyage_model"
 CONFIG_KEY_SELECTED_PDFS = "selected_pdfs"
 DEFAULT_CLASSIFIER_PROMPT = (
     "You are labeling a single page of an OCR'd legal transcript. "
-    "Return JSON with keys: page_type, form_name, date. "
-    "page_type must be one of: hearing, hearing_first_page, report, form, cover, index, "
-    "notice, minute_order, minute_order_first_page, form_first_page. "
-    "date should be a long-form U.S. date if present. "
-    "form_name should be the form name if page_type is form or form_first_page. "
-    "If unknown, use an empty string."
+    "Return JSON with keys: \"page_type\". "
+    "page_type must be one of: hearing_page, minute_order_page, report_page, form_page, other. "
+    "Use hearing_page for hearing transcript pages, minute_order_page for minute orders, "
+    "report_page for reports, form_page for court/JV forms, and other for everything else. "
+    "Examples:\n"
+    "Hearing page example: \"APPEARANCES:\\nTHE COURT: ...\\nTHE WITNESS: ...\" "
+    "-> {\"page_type\":\"hearing_page\"}\n"
+    "Minute order page example: \"MINUTE ORDER\" \"Judicial Officer\" \"Case No.\" "
+    "-> {\"page_type\":\"minute_order_page\"}\n"
+    "Report page example: \"Psychological Evaluation\" \"Prepared by\" "
+    "-> {\"page_type\":\"report_page\"}\n"
+    "Form page example: \"Juvenile Court Petition\" \"Form JV-100\" "
+    "-> {\"page_type\":\"form_page\"}\n"
+    "Other example: \"Table of Contents\" -> {\"page_type\":\"other\"}"
 )
 DEFAULT_CLASSIFY_DATES_PROMPT = (
     "You are extracting the date from a hearing_first_page or minute_order_first_page page "
@@ -918,6 +926,10 @@ def _write_manifest(
         "classification": {
             "basic": _relpath(classification_dir / "basic.jsonl"),
             "basic_corrected": _relpath(classification_dir / "basic_corrected.jsonl"),
+            "hearings_pages": _relpath(classification_dir / "hearings_pages.jsonl"),
+            "minute_order_pages": _relpath(classification_dir / "minute_order_pages.jsonl"),
+            "report_pages": _relpath(classification_dir / "report_pages.jsonl"),
+            "form_pages": _relpath(classification_dir / "form_pages.jsonl"),
             "dates": _relpath(classification_dir / "dates.jsonl"),
             "report_names": _relpath(classification_dir / "report_names.jsonl"),
             "relevant_forms": _relpath(classification_dir / "relevant_forms.jsonl"),
@@ -2607,11 +2619,25 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         ]
 
     def _resolve_case_root(self) -> Path | None:
-        parents = {path.parent for path in self.selected_pdfs}
-        if len(parents) != 1:
+        if self.selected_pdfs:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                return None
+            base_dir = parents.pop()
+            return base_dir / "case_bundle"
+        _case_name, base_dir = load_case_context()
+        if base_dir is None:
             return None
-        base_dir = parents.pop()
         return base_dir / "case_bundle"
+
+    def _resolve_case_base(self) -> Path | None:
+        if self.selected_pdfs:
+            parents = {path.parent for path in self.selected_pdfs}
+            if len(parents) != 1:
+                return None
+            return parents.pop()
+        _case_name, base_dir = load_case_context()
+        return base_dir
 
     def _resume_start_index(
         self,
@@ -2650,15 +2676,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_all_steps, daemon=True).start()
 
     def on_resume_clicked(self, _button: Gtk.Button) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
-            return
         if self._pipeline_running:
             self.show_toast("Pipeline already running.")
             return
         root_dir = self._resolve_case_root()
         if root_dir is None:
-            self.show_toast("Selected PDFs must be in the same folder.")
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         steps = self._pipeline_steps()
         start_index = self._resume_start_index(steps, root_dir)
@@ -2690,8 +2716,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_one, daemon=True).start()
 
     def on_step_strip_nonstandard_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2700,8 +2730,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_strip_nonstandard, daemon=True).start()
 
     def on_step_infer_case_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        base_dir = self._resolve_case_base()
+        if base_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2755,11 +2789,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
@@ -2798,10 +2832,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
+            base_dir = self._resolve_case_base()
+            if base_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             root_dir = base_dir / "case_bundle"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
@@ -2848,8 +2883,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         return success is True
 
     def on_step_two_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2858,8 +2897,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_two, daemon=True).start()
 
     def on_step_filter_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2868,8 +2911,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_filter, daemon=True).start()
 
     def on_step_correct_basic_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2878,8 +2925,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_correct_basic, daemon=True).start()
 
     def on_step_three_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2888,8 +2939,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_three, daemon=True).start()
 
     def on_step_six_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2898,8 +2953,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_six, daemon=True).start()
 
     def on_step_seven_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2908,8 +2967,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_seven, daemon=True).start()
 
     def on_step_eight_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2918,8 +2981,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_eight, daemon=True).start()
 
     def on_step_nine_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2928,8 +2995,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_nine, daemon=True).start()
 
     def on_step_ten_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2938,8 +3009,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_ten, daemon=True).start()
 
     def on_step_eleven_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -2948,8 +3023,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         threading.Thread(target=self._run_step_eleven, daemon=True).start()
 
     def on_step_twelve_clicked(self, _row: Adw.ActionRow) -> None:
-        if not self.selected_pdfs:
-            self.show_toast("Choose PDF files first.")
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
@@ -3009,11 +3088,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
@@ -3028,7 +3107,19 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             classification_dir.mkdir(parents=True, exist_ok=True)
             classify_basic_path = classification_dir / "basic.jsonl"
             classify_basic_path.touch(exist_ok=True)
+            hearings_pages_path = classification_dir / "hearings_pages.jsonl"
+            minute_order_pages_path = classification_dir / "minute_order_pages.jsonl"
+            report_pages_path = classification_dir / "report_pages.jsonl"
+            form_pages_path = classification_dir / "form_pages.jsonl"
+            hearings_pages_path.touch(exist_ok=True)
+            minute_order_pages_path.touch(exist_ok=True)
+            report_pages_path.touch(exist_ok=True)
+            form_pages_path.touch(exist_ok=True)
             done_basic = _load_jsonl_file_names(classify_basic_path)
+            done_hearings = _load_jsonl_file_names(hearings_pages_path)
+            done_minutes = _load_jsonl_file_names(minute_order_pages_path)
+            done_reports = _load_jsonl_file_names(report_pages_path)
+            done_forms = _load_jsonl_file_names(form_pages_path)
             text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)
             if not text_files:
                 raise FileNotFoundError("No text files found to classify.")
@@ -3048,6 +3139,48 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     handle.write(json.dumps(entry))
                     handle.write("\n")
                 done_basic.add(text_path.name)
+                page_number = _extract_page_number(text_path.name)
+                if page_number is None:
+                    continue
+                page_type = str(entry.get("page_type", "") or "").strip().lower()
+                page_type = page_type.replace(" ", "_")
+                page_type = {
+                    "hearing": "hearing_page",
+                    "hearing_first_page": "hearing_page",
+                    "minute_order": "minute_order_page",
+                    "minute_order_first_page": "minute_order_page",
+                    "report": "report_page",
+                    "form": "form_page",
+                    "form_first_page": "form_page",
+                }.get(page_type, page_type)
+                if page_type == "hearing_page" and text_path.name not in done_hearings:
+                    with hearings_pages_path.open("a", encoding="utf-8") as handle:
+                        handle.write(
+                            json.dumps({"file_name": text_path.name, "page_number": page_number})
+                        )
+                        handle.write("\n")
+                    done_hearings.add(text_path.name)
+                elif page_type == "minute_order_page" and text_path.name not in done_minutes:
+                    with minute_order_pages_path.open("a", encoding="utf-8") as handle:
+                        handle.write(
+                            json.dumps({"file_name": text_path.name, "page_number": page_number})
+                        )
+                        handle.write("\n")
+                    done_minutes.add(text_path.name)
+                elif page_type == "report_page" and text_path.name not in done_reports:
+                    with report_pages_path.open("a", encoding="utf-8") as handle:
+                        handle.write(
+                            json.dumps({"file_name": text_path.name, "page_number": page_number})
+                        )
+                        handle.write("\n")
+                    done_reports.add(text_path.name)
+                elif page_type == "form_page" and text_path.name not in done_forms:
+                    with form_pages_path.open("a", encoding="utf-8") as handle:
+                        handle.write(
+                            json.dumps({"file_name": text_path.name, "page_number": page_number})
+                        )
+                        handle.write("\n")
+                    done_forms.add(text_path.name)
         except StopRequested:
             success = None
         except Exception as exc:
@@ -3074,11 +3207,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             classification_dir = root_dir / "classification"
             classify_basic_path = classification_dir / "basic.jsonl"
             if not classify_basic_path.exists():
@@ -3238,11 +3371,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
@@ -3354,11 +3487,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
@@ -3509,11 +3642,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
             classify_basic_path = classification_dir / "basic_corrected.jsonl"
@@ -3621,11 +3754,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
             classify_basic_path = classification_dir / "basic_corrected.jsonl"
@@ -3799,11 +3932,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             derived_dir = root_dir / "artifacts"
             text_dir = root_dir / "text_pages"
             if not text_dir.exists():
@@ -3852,11 +3985,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             artifacts_dir = root_dir / "artifacts"
             raw_hearings_path = artifacts_dir / "raw_hearings.txt"
             raw_reports_path = artifacts_dir / "raw_reports.txt"
@@ -4005,11 +4138,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             artifacts_dir = root_dir / "artifacts"
             summaries_dir = root_dir / "summaries"
             summaries_path, reports_path = _summary_output_paths(root_dir)
@@ -4254,11 +4387,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             summaries_dir = root_dir / "summaries"
             summaries_path, reports_path = _summary_output_paths(root_dir)
             if not summaries_path.exists() or not reports_path.exists():
@@ -4320,11 +4453,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
-            parents = {path.parent for path in self.selected_pdfs}
-            if len(parents) != 1:
-                raise ValueError("Selected PDFs must be in the same folder.")
-            base_dir = parents.pop()
-            root_dir = base_dir / "case_bundle"
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
             summaries_dir = root_dir / "summaries"
             summaries_path, reports_path = _summary_output_paths(root_dir)
             if not summaries_path.exists() or not reports_path.exists():
