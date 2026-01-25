@@ -123,10 +123,10 @@ DEFAULT_CLASSIFY_MINUTE_DATES_PROMPT = (
     "If unknown, use an empty string."
 )
 DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT = (
-    "You are extracting the report name from the first page of a report in an OCR'd legal transcript. "
+    "You are reviewing the first page of a report in an OCR'd legal transcript. "
+    "Only return a report name if it matches the approved list provided. "
     "Return JSON with keys: name. "
-    "name should be the formal report title if present. "
-    "If unknown, use an empty string."
+    "name must be the matching report title from the list; otherwise use an empty string."
 )
 DEFAULT_ADVANCED_HEARING_PROMPT = (
     "You are reviewing a page labeled hearing_page in an OCR'd legal transcript. "
@@ -148,10 +148,10 @@ DEFAULT_ADVANCED_FORM_PROMPT = (
     "is_first_page must be yes or no."
 )
 DEFAULT_CLASSIFY_FORM_NAMES_PROMPT = (
-    "You are extracting the form name from a form_first_page in an OCR'd legal transcript. "
+    "You are reviewing the first page of a form in an OCR'd legal transcript. "
+    "Only return a form name if it matches the approved list provided. "
     "Return JSON with keys: name. "
-    "name should be the formal form title if present. "
-    "If unknown, use an empty string."
+    "name must be the matching form title from the list; otherwise use an empty string."
 )
 DEFAULT_CASE_NAME_PROMPT = (
     "You are inferring the case name from the first three pages of an OCR'd legal transcript. "
