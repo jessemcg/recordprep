@@ -45,17 +45,16 @@ CONFIG_KEY_CLASSIFIER_API_URL = "classifier_api_url"
 CONFIG_KEY_CLASSIFIER_MODEL_ID = "classifier_model_id"
 CONFIG_KEY_CLASSIFIER_API_KEY = "classifier_api_key"
 CONFIG_KEY_CLASSIFIER_PROMPT = "classifier_prompt"
-CONFIG_KEY_CLASSIFY_FURTHER_API_URL = "classify_further_api_url"
-CONFIG_KEY_CLASSIFY_FURTHER_MODEL_ID = "classify_further_model_id"
-CONFIG_KEY_CLASSIFY_FURTHER_API_KEY = "classify_further_api_key"
 CONFIG_KEY_CLASSIFY_DATES_API_URL = "classify_dates_api_url"
 CONFIG_KEY_CLASSIFY_DATES_MODEL_ID = "classify_dates_model_id"
 CONFIG_KEY_CLASSIFY_DATES_API_KEY = "classify_dates_api_key"
-CONFIG_KEY_CLASSIFY_DATES_PROMPT = "classify_dates_prompt"
-CONFIG_KEY_CLASSIFY_REPORTS_API_URL = "classify_report_names_api_url"
-CONFIG_KEY_CLASSIFY_REPORTS_MODEL_ID = "classify_report_names_model_id"
-CONFIG_KEY_CLASSIFY_REPORTS_API_KEY = "classify_report_names_api_key"
-CONFIG_KEY_CLASSIFY_REPORTS_PROMPT = "classify_report_names_prompt"
+CONFIG_KEY_CLASSIFY_DATES_HEARING_PROMPT = "classify_dates_hearing_prompt"
+CONFIG_KEY_CLASSIFY_DATES_MINUTE_PROMPT = "classify_dates_minute_prompt"
+CONFIG_KEY_CLASSIFY_NAMES_API_URL = "classify_names_api_url"
+CONFIG_KEY_CLASSIFY_NAMES_MODEL_ID = "classify_names_model_id"
+CONFIG_KEY_CLASSIFY_NAMES_API_KEY = "classify_names_api_key"
+CONFIG_KEY_CLASSIFY_NAMES_REPORT_PROMPT = "classify_names_report_prompt"
+CONFIG_KEY_CLASSIFY_NAMES_FORM_PROMPT = "classify_names_form_prompt"
 CONFIG_KEY_CASE_NAME_API_URL = "case_name_api_url"
 CONFIG_KEY_CASE_NAME_MODEL_ID = "case_name_model_id"
 CONFIG_KEY_CASE_NAME_API_KEY = "case_name_api_key"
@@ -109,8 +108,15 @@ DEFAULT_CLASSIFIER_PROMPT = (
     "-> {\"page_type\":\"form_page\"}\n"
     "Other example: \"Table of Contents\" -> {\"page_type\":\"other\"}"
 )
-DEFAULT_CLASSIFY_DATES_PROMPT = (
-    "You are extracting the date from a hearing_first_page or minute_order_first_page page "
+DEFAULT_CLASSIFY_HEARING_DATES_PROMPT = (
+    "You are extracting the hearing date from the first hearing page of an OCR'd legal transcript. "
+    "The date is usually near the top and not in the footer. "
+    "Return JSON with keys: date. "
+    "date should be a long-form U.S. date if present. "
+    "If unknown, use an empty string."
+)
+DEFAULT_CLASSIFY_MINUTE_DATES_PROMPT = (
+    "You are extracting the minute order date from a minute order first page "
     "of an OCR'd legal transcript. "
     "Return JSON with keys: date. "
     "date should be a long-form U.S. date if present. "
@@ -118,8 +124,8 @@ DEFAULT_CLASSIFY_DATES_PROMPT = (
 )
 DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT = (
     "You are extracting the report name from the first page of a report in an OCR'd legal transcript. "
-    "Return JSON with keys: report_name. "
-    "report_name should be the formal report title if present. "
+    "Return JSON with keys: name. "
+    "name should be the formal report title if present. "
     "If unknown, use an empty string."
 )
 DEFAULT_ADVANCED_HEARING_PROMPT = (
@@ -143,8 +149,8 @@ DEFAULT_ADVANCED_FORM_PROMPT = (
 )
 DEFAULT_CLASSIFY_FORM_NAMES_PROMPT = (
     "You are extracting the form name from a form_first_page in an OCR'd legal transcript. "
-    "Return JSON with keys: form_name. "
-    "form_name should be the formal form title if present. "
+    "Return JSON with keys: name. "
+    "name should be the formal form title if present. "
     "If unknown, use an empty string."
 )
 DEFAULT_CASE_NAME_PROMPT = (
@@ -942,6 +948,15 @@ def _write_manifest(
             "basic_corrected_advanced": _relpath(
                 classification_dir / "basic_corrected_advanced.jsonl"
             ),
+            "basic_corrected_advanced_corrected": _relpath(
+                classification_dir / "basic_corrected_advanced_corrected.jsonl"
+            ),
+            "basic_corrected_advanced_corrected_dates": _relpath(
+                classification_dir / "basic_corrected_advanced_corrected_dates.jsonl"
+            ),
+            "basic_corrected_advanced_corrected_dates_names": _relpath(
+                classification_dir / "basic_corrected_advanced_corrected_dates_names.jsonl"
+            ),
             "hearings_pages": _relpath(classification_dir / "hearings_pages.jsonl"),
             "minute_order_pages": _relpath(classification_dir / "minute_order_pages.jsonl"),
             "report_pages": _relpath(classification_dir / "report_pages.jsonl"),
@@ -1008,35 +1023,6 @@ def save_classifier_settings(api_url: str, model_id: str, api_key: str, prompt: 
     _write_config(config)
 
 
-def load_classify_further_settings() -> dict[str, str]:
-    config = _read_config()
-    api_url = str(config.get(CONFIG_KEY_CLASSIFY_FURTHER_API_URL, "") or "").strip()
-    model_id = str(config.get(CONFIG_KEY_CLASSIFY_FURTHER_MODEL_ID, "") or "").strip()
-    api_key = str(config.get(CONFIG_KEY_CLASSIFY_FURTHER_API_KEY, "") or "").strip()
-    dates_prompt = str(
-        config.get(CONFIG_KEY_CLASSIFY_DATES_PROMPT, DEFAULT_CLASSIFY_DATES_PROMPT) or ""
-    ).strip()
-    reports_prompt = str(
-        config.get(CONFIG_KEY_CLASSIFY_REPORTS_PROMPT, DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT) or ""
-    ).strip()
-    forms_prompt = str(
-        config.get(CONFIG_KEY_CLASSIFY_FORMS_PROMPT, DEFAULT_CLASSIFY_FORM_NAMES_PROMPT) or ""
-    ).strip()
-    if not (api_url and model_id and api_key):
-        shared = load_classifier_settings()
-        api_url = api_url or shared["api_url"]
-        model_id = model_id or shared["model_id"]
-        api_key = api_key or shared["api_key"]
-    return {
-        "api_url": api_url,
-        "model_id": model_id,
-        "api_key": api_key,
-        "dates_prompt": dates_prompt or DEFAULT_CLASSIFY_DATES_PROMPT,
-        "reports_prompt": reports_prompt or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT,
-        "forms_prompt": forms_prompt or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT,
-    }
-
-
 def load_advanced_classify_settings() -> dict[str, str]:
     config = _read_config()
     api_url = str(config.get(CONFIG_KEY_ADVANCED_CLASSIFY_API_URL, "") or "").strip()
@@ -1086,120 +1072,84 @@ def save_advanced_classify_settings(
     )
     _write_config(config)
 
-
-def save_classify_further_settings(api_url: str, model_id: str, api_key: str) -> None:
-    config = _read_config()
-    config[CONFIG_KEY_CLASSIFY_FURTHER_API_URL] = api_url
-    config[CONFIG_KEY_CLASSIFY_FURTHER_MODEL_ID] = model_id
-    config[CONFIG_KEY_CLASSIFY_FURTHER_API_KEY] = api_key
-    _write_config(config)
-
-
-def save_classify_further_prompts(
-    dates_prompt: str,
-    reports_prompt: str,
-    forms_prompt: str,
-) -> None:
-    config = _read_config()
-    config[CONFIG_KEY_CLASSIFY_DATES_PROMPT] = dates_prompt or DEFAULT_CLASSIFY_DATES_PROMPT
-    config[CONFIG_KEY_CLASSIFY_REPORTS_PROMPT] = (
-        reports_prompt or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT
-    )
-    config[CONFIG_KEY_CLASSIFY_FORMS_PROMPT] = forms_prompt or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT
-    _write_config(config)
-
-
 def load_classify_dates_settings() -> dict[str, str]:
     config = _read_config()
     api_url = str(config.get(CONFIG_KEY_CLASSIFY_DATES_API_URL, "") or "").strip()
     model_id = str(config.get(CONFIG_KEY_CLASSIFY_DATES_MODEL_ID, "") or "").strip()
     api_key = str(config.get(CONFIG_KEY_CLASSIFY_DATES_API_KEY, "") or "").strip()
-    prompt = str(config.get(CONFIG_KEY_CLASSIFY_DATES_PROMPT, DEFAULT_CLASSIFY_DATES_PROMPT) or "").strip()
-    if not (api_url and model_id and api_key):
-        shared = load_classify_further_settings()
-        api_url = api_url or shared["api_url"]
-        model_id = model_id or shared["model_id"]
-        api_key = api_key or shared["api_key"]
+    hearing_prompt = str(
+        config.get(CONFIG_KEY_CLASSIFY_DATES_HEARING_PROMPT, DEFAULT_CLASSIFY_HEARING_DATES_PROMPT)
+        or ""
+    ).strip()
+    minute_prompt = str(
+        config.get(CONFIG_KEY_CLASSIFY_DATES_MINUTE_PROMPT, DEFAULT_CLASSIFY_MINUTE_DATES_PROMPT)
+        or ""
+    ).strip()
     return {
         "api_url": api_url,
         "model_id": model_id,
         "api_key": api_key,
-        "prompt": prompt or DEFAULT_CLASSIFY_DATES_PROMPT,
+        "hearing_prompt": hearing_prompt or DEFAULT_CLASSIFY_HEARING_DATES_PROMPT,
+        "minute_prompt": minute_prompt or DEFAULT_CLASSIFY_MINUTE_DATES_PROMPT,
     }
 
 
-def save_classify_dates_settings(api_url: str, model_id: str, api_key: str, prompt: str) -> None:
+def save_classify_dates_settings(
+    api_url: str,
+    model_id: str,
+    api_key: str,
+    hearing_prompt: str,
+    minute_prompt: str,
+) -> None:
     config = _read_config()
     config[CONFIG_KEY_CLASSIFY_DATES_API_URL] = api_url
     config[CONFIG_KEY_CLASSIFY_DATES_MODEL_ID] = model_id
     config[CONFIG_KEY_CLASSIFY_DATES_API_KEY] = api_key
-    config[CONFIG_KEY_CLASSIFY_DATES_PROMPT] = prompt or DEFAULT_CLASSIFY_DATES_PROMPT
+    config[CONFIG_KEY_CLASSIFY_DATES_HEARING_PROMPT] = (
+        hearing_prompt or DEFAULT_CLASSIFY_HEARING_DATES_PROMPT
+    )
+    config[CONFIG_KEY_CLASSIFY_DATES_MINUTE_PROMPT] = (
+        minute_prompt or DEFAULT_CLASSIFY_MINUTE_DATES_PROMPT
+    )
     _write_config(config)
 
 
-def load_classify_report_names_settings() -> dict[str, str]:
+def load_classify_names_settings() -> dict[str, str]:
     config = _read_config()
-    api_url = str(config.get(CONFIG_KEY_CLASSIFY_REPORTS_API_URL, "") or "").strip()
-    model_id = str(config.get(CONFIG_KEY_CLASSIFY_REPORTS_MODEL_ID, "") or "").strip()
-    api_key = str(config.get(CONFIG_KEY_CLASSIFY_REPORTS_API_KEY, "") or "").strip()
-    prompt = str(config.get(CONFIG_KEY_CLASSIFY_REPORTS_PROMPT, DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT) or "").strip()
-    if not (api_url and model_id and api_key):
-        shared = load_classify_further_settings()
-        api_url = api_url or shared["api_url"]
-        model_id = model_id or shared["model_id"]
-        api_key = api_key or shared["api_key"]
+    api_url = str(config.get(CONFIG_KEY_CLASSIFY_NAMES_API_URL, "") or "").strip()
+    model_id = str(config.get(CONFIG_KEY_CLASSIFY_NAMES_MODEL_ID, "") or "").strip()
+    api_key = str(config.get(CONFIG_KEY_CLASSIFY_NAMES_API_KEY, "") or "").strip()
+    report_prompt = str(
+        config.get(CONFIG_KEY_CLASSIFY_NAMES_REPORT_PROMPT, DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT)
+        or ""
+    ).strip()
+    form_prompt = str(
+        config.get(CONFIG_KEY_CLASSIFY_NAMES_FORM_PROMPT, DEFAULT_CLASSIFY_FORM_NAMES_PROMPT) or ""
+    ).strip()
     return {
         "api_url": api_url,
         "model_id": model_id,
         "api_key": api_key,
-        "prompt": prompt or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT,
+        "report_prompt": report_prompt or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT,
+        "form_prompt": form_prompt or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT,
     }
 
 
-def save_classify_report_names_settings(
+def save_classify_names_settings(
     api_url: str,
     model_id: str,
     api_key: str,
-    prompt: str,
+    report_prompt: str,
+    form_prompt: str,
 ) -> None:
     config = _read_config()
-    config[CONFIG_KEY_CLASSIFY_REPORTS_API_URL] = api_url
-    config[CONFIG_KEY_CLASSIFY_REPORTS_MODEL_ID] = model_id
-    config[CONFIG_KEY_CLASSIFY_REPORTS_API_KEY] = api_key
-    config[CONFIG_KEY_CLASSIFY_REPORTS_PROMPT] = prompt or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT
-    _write_config(config)
-
-
-def load_classify_form_names_settings() -> dict[str, str]:
-    config = _read_config()
-    api_url = str(config.get(CONFIG_KEY_CLASSIFY_FORMS_API_URL, "") or "").strip()
-    model_id = str(config.get(CONFIG_KEY_CLASSIFY_FORMS_MODEL_ID, "") or "").strip()
-    api_key = str(config.get(CONFIG_KEY_CLASSIFY_FORMS_API_KEY, "") or "").strip()
-    prompt = str(config.get(CONFIG_KEY_CLASSIFY_FORMS_PROMPT, DEFAULT_CLASSIFY_FORM_NAMES_PROMPT) or "").strip()
-    if not (api_url and model_id and api_key):
-        shared = load_classify_further_settings()
-        api_url = api_url or shared["api_url"]
-        model_id = model_id or shared["model_id"]
-        api_key = api_key or shared["api_key"]
-    return {
-        "api_url": api_url,
-        "model_id": model_id,
-        "api_key": api_key,
-        "prompt": prompt or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT,
-    }
-
-
-def save_classify_form_names_settings(
-    api_url: str,
-    model_id: str,
-    api_key: str,
-    prompt: str,
-) -> None:
-    config = _read_config()
-    config[CONFIG_KEY_CLASSIFY_FORMS_API_URL] = api_url
-    config[CONFIG_KEY_CLASSIFY_FORMS_MODEL_ID] = model_id
-    config[CONFIG_KEY_CLASSIFY_FORMS_API_KEY] = api_key
-    config[CONFIG_KEY_CLASSIFY_FORMS_PROMPT] = prompt or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT
+    config[CONFIG_KEY_CLASSIFY_NAMES_API_URL] = api_url
+    config[CONFIG_KEY_CLASSIFY_NAMES_MODEL_ID] = model_id
+    config[CONFIG_KEY_CLASSIFY_NAMES_API_KEY] = api_key
+    config[CONFIG_KEY_CLASSIFY_NAMES_REPORT_PROMPT] = (
+        report_prompt or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT
+    )
+    config[CONFIG_KEY_CLASSIFY_NAMES_FORM_PROMPT] = form_prompt or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT
     _write_config(config)
 
 
@@ -1284,13 +1234,21 @@ class ClassifySettingsWidgets:
 
 
 @dataclass
-class ClassifyFurtherSettingsWidgets:
+class ClassifyDatesSettingsWidgets:
     api_url_row: Adw.EntryRow
     model_row: Adw.EntryRow
     api_key_row: Adw.EntryRow
-    dates_prompt_buffer: Gtk.TextBuffer
-    reports_prompt_buffer: Gtk.TextBuffer
-    forms_prompt_buffer: Gtk.TextBuffer
+    hearing_prompt_buffer: Gtk.TextBuffer
+    minute_prompt_buffer: Gtk.TextBuffer
+
+
+@dataclass
+class ClassifyNamesSettingsWidgets:
+    api_url_row: Adw.EntryRow
+    model_row: Adw.EntryRow
+    api_key_row: Adw.EntryRow
+    report_prompt_buffer: Gtk.TextBuffer
+    form_prompt_buffer: Gtk.TextBuffer
 
 
 @dataclass
@@ -1495,7 +1453,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.set_resizable(True)
         self._on_saved = on_saved
         self._prompt_editors: dict[str, ClassifySettingsWidgets] = {}
-        self._classify_further_widgets: ClassifyFurtherSettingsWidgets | None = None
+        self._classify_dates_widgets: ClassifyDatesSettingsWidgets | None = None
+        self._classify_names_widgets: ClassifyNamesSettingsWidgets | None = None
         self._advanced_classify_widgets: AdvancedClassificationSettingsWidgets | None = None
         self._prompt_row_keys: dict[Gtk.ListBoxRow, str] = {}
         self._build_ui()
@@ -1615,19 +1574,33 @@ class SettingsWindow(Adw.ApplicationWindow):
         classify_advanced_page = self._build_advanced_classify_prompt_page()
         prompt_stack.add_named(classify_advanced_page, "classify-advanced")
 
-        classify_further_row = Gtk.ListBoxRow()
-        classify_further_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        classify_further_box.set_margin_top(8)
-        classify_further_box.set_margin_bottom(8)
-        classify_further_box.set_margin_start(12)
-        classify_further_box.set_margin_end(12)
-        classify_further_label = Gtk.Label(label="Classification dates/names", xalign=0)
-        classify_further_box.append(classify_further_label)
-        classify_further_row.set_child(classify_further_box)
-        prompt_list.append(classify_further_row)
-        self._prompt_row_keys[classify_further_row] = "classify-further"
-        classify_further_page = self._build_classify_further_prompt_page()
-        prompt_stack.add_named(classify_further_page, "classify-further")
+        classify_dates_row = Gtk.ListBoxRow()
+        classify_dates_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        classify_dates_box.set_margin_top(8)
+        classify_dates_box.set_margin_bottom(8)
+        classify_dates_box.set_margin_start(12)
+        classify_dates_box.set_margin_end(12)
+        classify_dates_label = Gtk.Label(label="Classification dates", xalign=0)
+        classify_dates_box.append(classify_dates_label)
+        classify_dates_row.set_child(classify_dates_box)
+        prompt_list.append(classify_dates_row)
+        self._prompt_row_keys[classify_dates_row] = "classify-dates"
+        classify_dates_page = self._build_classify_dates_prompt_page()
+        prompt_stack.add_named(classify_dates_page, "classify-dates")
+
+        classify_names_row = Gtk.ListBoxRow()
+        classify_names_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        classify_names_box.set_margin_top(8)
+        classify_names_box.set_margin_bottom(8)
+        classify_names_box.set_margin_start(12)
+        classify_names_box.set_margin_end(12)
+        classify_names_label = Gtk.Label(label="Classification names", xalign=0)
+        classify_names_box.append(classify_names_label)
+        classify_names_row.set_child(classify_names_box)
+        prompt_list.append(classify_names_row)
+        self._prompt_row_keys[classify_names_row] = "classify-names"
+        classify_names_page = self._build_classify_names_prompt_page()
+        prompt_stack.add_named(classify_names_page, "classify-names")
 
         optimize_row = Gtk.ListBoxRow()
         optimize_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -1874,8 +1847,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         )
         return page
 
-    def _build_classify_further_prompt_page(self) -> Gtk.Widget:
-        settings = load_classify_further_settings()
+    def _build_classify_dates_prompt_page(self) -> Gtk.Widget:
+        settings = load_classify_dates_settings()
 
         page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         page_box.set_margin_top(12)
@@ -1884,7 +1857,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         page_box.set_margin_end(12)
         page_box.set_vexpand(True)
 
-        title_label = Gtk.Label(label="Classification dates/names", xalign=0)
+        title_label = Gtk.Label(label="Classification dates", xalign=0)
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
@@ -1909,27 +1882,87 @@ class SettingsWindow(Adw.ApplicationWindow):
         prompt_section.set_hexpand(True)
         prompt_section.set_vexpand(True)
 
-        dates_label = Gtk.Label(label="Classify Dates (First Pages) Prompt", xalign=0)
-        dates_label.add_css_class("dim-label")
-        prompt_section.append(dates_label)
-        dates_scroller, dates_buffer = self._build_prompt_editor(
-            settings.get("dates_prompt") or DEFAULT_CLASSIFY_DATES_PROMPT
+        hearing_label = Gtk.Label(label="Hearing Date Prompt", xalign=0)
+        hearing_label.add_css_class("dim-label")
+        prompt_section.append(hearing_label)
+        hearing_scroller, hearing_buffer = self._build_prompt_editor(
+            settings.get("hearing_prompt") or DEFAULT_CLASSIFY_HEARING_DATES_PROMPT
         )
-        prompt_section.append(dates_scroller)
+        prompt_section.append(hearing_scroller)
 
-        reports_label = Gtk.Label(label="Classify Report Names (First Pages) Prompt", xalign=0)
+        minute_label = Gtk.Label(label="Minute Order Date Prompt", xalign=0)
+        minute_label.add_css_class("dim-label")
+        prompt_section.append(minute_label)
+        minute_scroller, minute_buffer = self._build_prompt_editor(
+            settings.get("minute_prompt") or DEFAULT_CLASSIFY_MINUTE_DATES_PROMPT
+        )
+        prompt_section.append(minute_scroller)
+
+        page_box.append(prompt_section)
+
+        page = Gtk.ScrolledWindow()
+        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page.set_hexpand(True)
+        page.set_vexpand(True)
+        page.set_child(page_box)
+
+        self._classify_dates_widgets = ClassifyDatesSettingsWidgets(
+            api_url_row=api_url_row,
+            model_row=model_row,
+            api_key_row=api_key_row,
+            hearing_prompt_buffer=hearing_buffer,
+            minute_prompt_buffer=minute_buffer,
+        )
+        return page
+
+    def _build_classify_names_prompt_page(self) -> Gtk.Widget:
+        settings = load_classify_names_settings()
+
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page_box.set_margin_top(12)
+        page_box.set_margin_bottom(12)
+        page_box.set_margin_start(12)
+        page_box.set_margin_end(12)
+        page_box.set_vexpand(True)
+
+        title_label = Gtk.Label(label="Classification names", xalign=0)
+        title_label.add_css_class("title-3")
+        page_box.append(title_label)
+
+        credentials_group = Adw.PreferencesGroup(title="Credentials")
+        credentials_group.add_css_class("list-stack")
+        credentials_group.set_hexpand(True)
+        page_box.append(credentials_group)
+
+        api_url_row = Adw.EntryRow(title="API URL")
+        api_url_row.set_text(settings.get("api_url", ""))
+        credentials_group.add(api_url_row)
+
+        model_row = Adw.EntryRow(title="Model ID (optional)")
+        model_row.set_text(settings.get("model_id", ""))
+        credentials_group.add(model_row)
+
+        api_key_row = self._build_password_row("API Key")
+        api_key_row.set_text(settings.get("api_key", ""))
+        credentials_group.add(api_key_row)
+
+        prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        prompt_section.set_hexpand(True)
+        prompt_section.set_vexpand(True)
+
+        reports_label = Gtk.Label(label="Report Name Prompt", xalign=0)
         reports_label.add_css_class("dim-label")
         prompt_section.append(reports_label)
         reports_scroller, reports_buffer = self._build_prompt_editor(
-            settings.get("reports_prompt") or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT
+            settings.get("report_prompt") or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT
         )
         prompt_section.append(reports_scroller)
 
-        forms_label = Gtk.Label(label="Classify Form Names (First Pages) Prompt", xalign=0)
+        forms_label = Gtk.Label(label="Form Name Prompt", xalign=0)
         forms_label.add_css_class("dim-label")
         prompt_section.append(forms_label)
         forms_scroller, forms_buffer = self._build_prompt_editor(
-            settings.get("forms_prompt") or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT
+            settings.get("form_prompt") or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT
         )
         prompt_section.append(forms_scroller)
 
@@ -1941,13 +1974,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.set_vexpand(True)
         page.set_child(page_box)
 
-        self._classify_further_widgets = ClassifyFurtherSettingsWidgets(
+        self._classify_names_widgets = ClassifyNamesSettingsWidgets(
             api_url_row=api_url_row,
             model_row=model_row,
             api_key_row=api_key_row,
-            dates_prompt_buffer=dates_buffer,
-            reports_prompt_buffer=reports_buffer,
-            forms_prompt_buffer=forms_buffer,
+            report_prompt_buffer=reports_buffer,
+            form_prompt_buffer=forms_buffer,
         )
         return page
 
@@ -2213,7 +2245,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         case_widgets = self._prompt_editors.get("case-name")
         classify_basic_widgets = self._prompt_editors.get("classify-basic")
         advanced_classify_widgets = self._advanced_classify_widgets
-        classify_further_widgets = self._classify_further_widgets
+        classify_dates_widgets = self._classify_dates_widgets
+        classify_names_widgets = self._classify_names_widgets
         optimize_widgets = getattr(self, "_optimize_widgets", None)
         summarize_widgets = getattr(self, "_summarize_widgets", None)
         overview_widgets = getattr(self, "_overview_widgets", None)
@@ -2241,15 +2274,21 @@ class SettingsWindow(Adw.ApplicationWindow):
                 self._prompt_text(advanced_classify_widgets.minute_prompt_buffer).strip(),
                 self._prompt_text(advanced_classify_widgets.form_prompt_buffer).strip(),
             )
-        if classify_further_widgets:
-            api_url = classify_further_widgets.api_url_row.get_text().strip()
-            model_id = classify_further_widgets.model_row.get_text().strip()
-            api_key = classify_further_widgets.api_key_row.get_text().strip()
-            save_classify_further_settings(api_url, model_id, api_key)
-            save_classify_further_prompts(
-                self._prompt_text(classify_further_widgets.dates_prompt_buffer).strip(),
-                self._prompt_text(classify_further_widgets.reports_prompt_buffer).strip(),
-                self._prompt_text(classify_further_widgets.forms_prompt_buffer).strip(),
+        if classify_dates_widgets:
+            save_classify_dates_settings(
+                classify_dates_widgets.api_url_row.get_text().strip(),
+                classify_dates_widgets.model_row.get_text().strip(),
+                classify_dates_widgets.api_key_row.get_text().strip(),
+                self._prompt_text(classify_dates_widgets.hearing_prompt_buffer).strip(),
+                self._prompt_text(classify_dates_widgets.minute_prompt_buffer).strip(),
+            )
+        if classify_names_widgets:
+            save_classify_names_settings(
+                classify_names_widgets.api_url_row.get_text().strip(),
+                classify_names_widgets.model_row.get_text().strip(),
+                classify_names_widgets.api_key_row.get_text().strip(),
+                self._prompt_text(classify_names_widgets.report_prompt_buffer).strip(),
+                self._prompt_text(classify_names_widgets.form_prompt_buffer).strip(),
             )
         if optimize_widgets:
             save_optimize_settings(
@@ -2409,14 +2448,32 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._attach_step_status(self.step_advanced_row)
         self.step_list.append(self.step_advanced_row)
 
-        self.step_three_row = Adw.ActionRow(
-            title="Classification dates/names",
-            subtitle="Classify dates, report names, and form names from first pages.",
+        self.step_advanced_correct_row = Adw.ActionRow(
+            title="Correct advanced classification",
+            subtitle="Fix consecutive hearing last-page markers.",
         )
-        self.step_three_row.set_activatable(True)
-        self.step_three_row.connect("activated", self.on_step_three_clicked)
-        self._attach_step_status(self.step_three_row)
-        self.step_list.append(self.step_three_row)
+        self.step_advanced_correct_row.set_activatable(True)
+        self.step_advanced_correct_row.connect("activated", self.on_step_advanced_correct_clicked)
+        self._attach_step_status(self.step_advanced_correct_row)
+        self.step_list.append(self.step_advanced_correct_row)
+
+        self.step_dates_row = Adw.ActionRow(
+            title="Classification dates",
+            subtitle="Add hearing and minute order dates to first pages.",
+        )
+        self.step_dates_row.set_activatable(True)
+        self.step_dates_row.connect("activated", self.on_step_dates_clicked)
+        self._attach_step_status(self.step_dates_row)
+        self.step_list.append(self.step_dates_row)
+
+        self.step_names_row = Adw.ActionRow(
+            title="Classification names",
+            subtitle="Add report and form names to first pages.",
+        )
+        self.step_names_row.set_activatable(True)
+        self.step_names_row.connect("activated", self.on_step_names_clicked)
+        self._attach_step_status(self.step_names_row)
+        self.step_list.append(self.step_names_row)
 
         self.step_six_row = Adw.ActionRow(
             title="Build TOC",
@@ -2651,7 +2708,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ("classify_basic", self.step_two_row, self._run_step_two),
             ("correct_basic", self.step_correct_basic_row, self._run_step_correct_basic),
             ("classify_advanced", self.step_advanced_row, self._run_step_advanced),
-            ("classify_further", self.step_three_row, self._run_step_three),
+            (
+                "classify_advanced_corrected",
+                self.step_advanced_correct_row,
+                self._run_step_advanced_correct,
+            ),
+            ("classify_dates", self.step_dates_row, self._run_step_dates),
+            ("classify_names", self.step_names_row, self._run_step_names),
             ("build_toc", self.step_six_row, self._run_step_six),
             ("find_boundaries", self.step_seven_row, self._run_step_seven),
             ("create_raw", self.step_eight_row, self._run_step_eight),
@@ -2696,11 +2759,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if last_failed == "classify":
             last_failed = "classify_basic"
         if last_completed == "classify":
-            last_completed = "classify_further"
+            last_completed = "classify_names"
         if last_failed == "classify_filter":
             last_failed = "classify_advanced"
         if last_completed == "classify_filter":
             last_completed = "classify_advanced"
+        if last_failed == "classify_further":
+            last_failed = "classify_dates"
+        if last_completed == "classify_further":
+            last_completed = "classify_names"
         if isinstance(last_failed, str) and last_failed in step_ids:
             return step_ids.index(last_failed)
         if isinstance(last_completed, str) and last_completed in step_ids:
@@ -2957,6 +3024,20 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._start_step(self.step_advanced_row)
         threading.Thread(target=self._run_step_advanced, daemon=True).start()
 
+    def on_step_advanced_correct_clicked(self, _row: Adw.ActionRow) -> None:
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
+            return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
+        self.step_advanced_correct_row.set_sensitive(False)
+        self._start_step(self.step_advanced_correct_row)
+        threading.Thread(target=self._run_step_advanced_correct, daemon=True).start()
+
     def on_step_correct_basic_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
         if root_dir is None:
@@ -2971,7 +3052,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._start_step(self.step_correct_basic_row)
         threading.Thread(target=self._run_step_correct_basic, daemon=True).start()
 
-    def on_step_three_clicked(self, _row: Adw.ActionRow) -> None:
+    def on_step_dates_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
         if root_dir is None:
             if self.selected_pdfs:
@@ -2981,9 +3062,23 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self._stop_event.clear()
         self.stop_button.set_sensitive(True)
-        self.step_three_row.set_sensitive(False)
-        self._start_step(self.step_three_row)
-        threading.Thread(target=self._run_step_three, daemon=True).start()
+        self.step_dates_row.set_sensitive(False)
+        self._start_step(self.step_dates_row)
+        threading.Thread(target=self._run_step_dates, daemon=True).start()
+
+    def on_step_names_clicked(self, _row: Adw.ActionRow) -> None:
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
+            return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
+        self.step_names_row.set_sensitive(False)
+        self._start_step(self.step_names_row)
+        threading.Thread(target=self._run_step_names, daemon=True).start()
 
     def on_step_six_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -3387,7 +3482,65 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._stop_button_if_idle)
         return success is True
 
-    def _run_step_three(self) -> bool:
+    def _run_step_advanced_correct(self) -> bool:
+        success: bool | None = False
+        try:
+            self._raise_if_stop_requested()
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
+            classification_dir = root_dir / "classification"
+            advanced_path = classification_dir / "basic_corrected_advanced.jsonl"
+            if not advanced_path.exists():
+                raise FileNotFoundError(
+                    "Run Advanced classification to generate advanced corrections first."
+                )
+            entries = _load_jsonl_entries(advanced_path)
+            if not entries:
+                raise FileNotFoundError("No entries found in basic_corrected_advanced.jsonl.")
+            corrections = 0
+            for index in range(len(entries) - 1):
+                self._raise_if_stop_requested()
+                current = entries[index]
+                next_entry = entries[index + 1]
+                current_type = _extract_entry_value(current, "page_type", "pagetype").strip().lower()
+                next_type = _extract_entry_value(next_entry, "page_type", "pagetype").strip().lower()
+                if current_type == "hearing_page_last_page" and next_type == "hearing_page_last_page":
+                    current["page_type"] = "hearing_page"
+                    corrections += 1
+            corrected_path = classification_dir / "basic_corrected_advanced_corrected.jsonl"
+            with corrected_path.open("w", encoding="utf-8") as handle:
+                for entry in entries:
+                    handle.write(json.dumps(entry))
+                    handle.write("\n")
+        except StopRequested:
+            success = None
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Correct advanced classification failed: {exc}")
+        else:
+            success = True
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "classify_advanced_corrected",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
+            GLib.idle_add(
+                self.show_toast,
+                f"Correct advanced classification complete. {corrections} changes applied.",
+            )
+        finally:
+            GLib.idle_add(self.step_advanced_correct_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_advanced_correct_row, success)
+            GLib.idle_add(self._stop_status_if_idle)
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
+
+    def _run_step_dates(self) -> bool:
         success: bool | None = False
         try:
             self._raise_if_stop_requested()
@@ -3400,67 +3553,158 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
             classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "basic_corrected_advanced.jsonl"
+            classify_basic_path = classification_dir / "basic_corrected_advanced_corrected.jsonl"
             if not classify_basic_path.exists():
                 raise FileNotFoundError(
-                    "Run Advanced classification to generate advanced corrections first."
+                    "Run Correct advanced classification to generate advanced corrections first."
                 )
-            further_settings = load_classify_further_settings()
-            if (
-                not further_settings["api_url"]
-                or not further_settings["model_id"]
-                or not further_settings["api_key"]
-            ):
+            settings = load_classify_dates_settings()
+            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError(
-                    "Configure classify further API URL, model ID, and API key in Settings."
+                    "Configure classification dates API URL, model ID, and API key in Settings."
                 )
-
-            classify_dates_path = classification_dir / "dates.jsonl"
-            classify_dates_path.touch(exist_ok=True)
-            done_dates = _load_jsonl_file_names(classify_dates_path)
-            date_targets = _load_classify_date_targets(classify_basic_path)
-            if date_targets:
-                date_settings = {
-                    "api_url": further_settings["api_url"],
-                    "model_id": further_settings["model_id"],
-                    "api_key": further_settings["api_key"],
-                    "prompt": further_settings["dates_prompt"],
-                }
-                for file_name, _page_type in date_targets:
-                    self._raise_if_stop_requested()
-                    if file_name in done_dates:
+            entries = _load_jsonl_entries(classify_basic_path)
+            if not entries:
+                raise FileNotFoundError("No entries found in basic_corrected_advanced_corrected.jsonl.")
+            hearing_types = {
+                "hearing",
+                "hearing_page",
+                "hearing_page_last_page",
+            }
+            minute_first_types = {"minute_order_page_first_page", "minute_order_first_page"}
+            previous_hearing = False
+            updates = 0
+            for entry in entries:
+                self._raise_if_stop_requested()
+                page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                is_hearing_start = page_type == "hearing_page" and not previous_hearing
+                if page_type in hearing_types:
+                    previous_hearing = True
+                else:
+                    previous_hearing = False
+                if is_hearing_start:
+                    if _extract_entry_value(entry, "date"):
+                        continue
+                    file_name = _extract_entry_value(entry, "file_name", "filename")
+                    if not file_name:
                         continue
                     text_path = text_dir / file_name
                     if not text_path.exists():
                         raise FileNotFoundError(
-                            f"Missing text file {file_name} for date classification."
+                            f"Missing text file {file_name} for hearing date classification."
                         )
                     content = text_path.read_text(encoding="utf-8", errors="ignore")
-                    entry = self._classify_text(date_settings, file_name, content)
-                    ordered_entry: dict[str, str] = {"file_name": file_name}
-                    for key, value in entry.items():
-                        if key == "file_name":
-                            continue
-                        ordered_entry[key] = value
-                    with classify_dates_path.open("a", encoding="utf-8") as handle:
-                        handle.write(json.dumps(ordered_entry))
-                        handle.write("\n")
-                    done_dates.add(file_name)
+                    response = self._classify_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": settings["hearing_prompt"],
+                        },
+                        file_name,
+                        content,
+                    )
+                    date_value = _extract_entry_value(response, "date")
+                    if date_value:
+                        entry["date"] = date_value
+                        updates += 1
+                    continue
+                if page_type in minute_first_types:
+                    if _extract_entry_value(entry, "date"):
+                        continue
+                    file_name = _extract_entry_value(entry, "file_name", "filename")
+                    if not file_name:
+                        continue
+                    text_path = text_dir / file_name
+                    if not text_path.exists():
+                        raise FileNotFoundError(
+                            f"Missing text file {file_name} for minute order date classification."
+                        )
+                    content = text_path.read_text(encoding="utf-8", errors="ignore")
+                    response = self._classify_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": settings["minute_prompt"],
+                        },
+                        file_name,
+                        content,
+                    )
+                    date_value = _extract_entry_value(response, "date")
+                    if date_value:
+                        entry["date"] = date_value
+                        updates += 1
 
-            classify_report_names_path = classification_dir / "report_names.jsonl"
-            classify_report_names_path.touch(exist_ok=True)
-            done_reports = _load_jsonl_file_names(classify_report_names_path)
-            report_targets = _load_classify_report_targets(classify_basic_path)
-            if report_targets:
-                report_settings_payload = {
-                    "api_url": further_settings["api_url"],
-                    "model_id": further_settings["model_id"],
-                    "api_key": further_settings["api_key"],
-                    "prompt": further_settings["reports_prompt"],
-                }
-                for file_name, _page_type in report_targets:
-                    self._raise_if_stop_requested()
-                    if file_name in done_reports:
+            dated_path = classification_dir / "basic_corrected_advanced_corrected_dates.jsonl"
+            with dated_path.open("w", encoding="utf-8") as handle:
+                for entry in entries:
+                    handle.write(json.dumps(entry))
+                    handle.write("\n")
+        except StopRequested:
+            success = None
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Classification dates failed: {exc}")
+        else:
+            success = True
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "classify_dates",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
+            GLib.idle_add(self.show_toast, f"Classification dates complete. {updates} updates applied.")
+        finally:
+            GLib.idle_add(self.step_dates_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_dates_row, success)
+            GLib.idle_add(self._stop_status_if_idle)
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
+
+    def _run_step_names(self) -> bool:
+        success: bool | None = False
+        try:
+            self._raise_if_stop_requested()
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
+            text_dir = root_dir / "text_pages"
+            if not text_dir.exists():
+                raise FileNotFoundError("Run Create files to generate text files first.")
+            classification_dir = root_dir / "classification"
+            dates_path = classification_dir / "basic_corrected_advanced_corrected_dates.jsonl"
+            if not dates_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification dates to generate dated classifications first."
+                )
+            settings = load_classify_names_settings()
+            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
+                raise ValueError(
+                    "Configure classification names API URL, model ID, and API key in Settings."
+                )
+            entries = _load_jsonl_entries(dates_path)
+            if not entries:
+                raise FileNotFoundError(
+                    "No entries found in basic_corrected_advanced_corrected_dates.jsonl."
+                )
+            report_types = {"report", "report_page"}
+            form_first_types = {"form_page_first_page", "form_first_page"}
+            previous_report = False
+            updates = 0
+            for entry in entries:
+                self._raise_if_stop_requested()
+                page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                is_report_start = page_type in report_types and not previous_report
+                previous_report = page_type in report_types
+                if is_report_start:
+                    if _extract_entry_value(entry, "name"):
+                        continue
+                    file_name = _extract_entry_value(entry, "file_name", "filename")
+                    if not file_name:
                         continue
                     text_path = text_dir / file_name
                     if not text_path.exists():
@@ -3468,31 +3712,26 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                             f"Missing text file {file_name} for report name classification."
                         )
                     content = text_path.read_text(encoding="utf-8", errors="ignore")
-                    entry = self._classify_text(report_settings_payload, file_name, content)
-                    ordered_entry: dict[str, str] = {"file_name": file_name}
-                    for key, value in entry.items():
-                        if key == "file_name":
-                            continue
-                        ordered_entry[key] = value
-                    with classify_report_names_path.open("a", encoding="utf-8") as handle:
-                        handle.write(json.dumps(ordered_entry))
-                        handle.write("\n")
-                    done_reports.add(file_name)
-
-            classify_form_names_path = classification_dir / "form_names.jsonl"
-            classify_form_names_path.touch(exist_ok=True)
-            done_forms = _load_jsonl_file_names(classify_form_names_path)
-            form_targets = _load_classify_form_targets(classify_basic_path)
-            if form_targets:
-                form_settings_payload = {
-                    "api_url": further_settings["api_url"],
-                    "model_id": further_settings["model_id"],
-                    "api_key": further_settings["api_key"],
-                    "prompt": further_settings["forms_prompt"],
-                }
-                for file_name, _page_type in form_targets:
-                    self._raise_if_stop_requested()
-                    if file_name in done_forms:
+                    response = self._classify_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": settings["report_prompt"],
+                        },
+                        file_name,
+                        content,
+                    )
+                    name_value = _extract_entry_value(response, "name", "report_name")
+                    if name_value:
+                        entry["name"] = name_value
+                        updates += 1
+                    continue
+                if page_type in form_first_types:
+                    if _extract_entry_value(entry, "name"):
+                        continue
+                    file_name = _extract_entry_value(entry, "file_name", "filename")
+                    if not file_name:
                         continue
                     text_path = text_dir / file_name
                     if not text_path.exists():
@@ -3500,34 +3739,44 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                             f"Missing text file {file_name} for form name classification."
                         )
                     content = text_path.read_text(encoding="utf-8", errors="ignore")
-                    entry = self._classify_text(form_settings_payload, file_name, content)
-                    ordered_entry: dict[str, str] = {"file_name": file_name}
-                    for key, value in entry.items():
-                        if key == "file_name":
-                            continue
-                        ordered_entry[key] = value
-                    with classify_form_names_path.open("a", encoding="utf-8") as handle:
-                        handle.write(json.dumps(ordered_entry))
-                        handle.write("\n")
-                    done_forms.add(file_name)
+                    response = self._classify_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": settings["form_prompt"],
+                        },
+                        file_name,
+                        content,
+                    )
+                    name_value = _extract_entry_value(response, "name", "form_name")
+                    if name_value:
+                        entry["name"] = name_value
+                        updates += 1
+
+            named_path = classification_dir / "basic_corrected_advanced_corrected_dates_names.jsonl"
+            with named_path.open("w", encoding="utf-8") as handle:
+                for entry in entries:
+                    handle.write(json.dumps(entry))
+                    handle.write("\n")
         except StopRequested:
             success = None
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Classification dates/names failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Classification names failed: {exc}")
         else:
             success = True
             self._safe_update_manifest(
                 root_dir,
                 {
-                    "last_completed_step": "classify_further",
+                    "last_completed_step": "classify_names",
                     "last_failed_step": None,
                     "last_failed_at": None,
                 },
             )
-            GLib.idle_add(self.show_toast, "Classification dates/names complete.")
+            GLib.idle_add(self.show_toast, f"Classification names complete. {updates} updates applied.")
         finally:
-            GLib.idle_add(self.step_three_row.set_sensitive, True)
-            GLib.idle_add(self._finish_step, self.step_three_row, success)
+            GLib.idle_add(self.step_names_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_names_row, success)
             GLib.idle_add(self._stop_status_if_idle)
             GLib.idle_add(self._stop_button_if_idle)
         return success is True
@@ -3543,69 +3792,63 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Choose PDF files or select a saved case first.")
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
-            classify_basic_path = classification_dir / "basic_corrected_advanced.jsonl"
-            classify_dates_path = classification_dir / "dates.jsonl"
-            classify_report_names_path = classification_dir / "report_names.jsonl"
-            classify_form_names_path = classification_dir / "form_names.jsonl"
-            for path in (
-                classify_basic_path,
-                classify_dates_path,
-                classify_report_names_path,
-                classify_form_names_path,
-            ):
-                if not path.exists():
-                    raise FileNotFoundError(
-                        "Run Advanced classification and dates/names to generate classify JSONL files first."
-                    )
+            classify_basic_path = (
+                classification_dir / "basic_corrected_advanced_corrected_dates_names.jsonl"
+            )
+            if not classify_basic_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification dates and names to generate classify JSONL files first."
+                )
             derived_dir.mkdir(parents=True, exist_ok=True)
-            date_entries = _load_jsonl_entries(classify_dates_path)
             basic_entries = _load_jsonl_entries(classify_basic_path)
+            if not basic_entries:
+                raise FileNotFoundError(
+                    "No entries found in basic_corrected_advanced_corrected_dates_names.jsonl."
+                )
             date_by_file: dict[str, str] = {}
-            for entry in date_entries:
+            for entry in basic_entries:
                 self._raise_if_stop_requested()
                 file_name = _extract_entry_value(entry, "file_name", "filename")
                 if not file_name:
                     continue
                 date_value = _extract_entry_value(entry, "date")
-                date_by_file[file_name] = date_value
-            for entry in basic_entries:
-                self._raise_if_stop_requested()
-                file_name = _extract_entry_value(entry, "file_name", "filename")
-                if not file_name or file_name in date_by_file:
-                    continue
-                date_value = _extract_entry_value(entry, "date")
                 if date_value:
                     date_by_file[file_name] = date_value
             form_lines: list[str] = []
-            for entry in _load_jsonl_entries(classify_form_names_path):
-                self._raise_if_stop_requested()
-                form_name = _extract_entry_value(entry, "form_name", "form")
-                if not form_name:
-                    continue
-                page = _page_label_from_filename(
-                    _extract_entry_value(entry, "file_name", "filename")
-                )
-                form_lines.append(_format_toc_line(form_name, page))
             report_lines: list[str] = []
-            for entry in _load_jsonl_entries(classify_report_names_path):
+            report_types = {"report", "report_page"}
+            form_first_types = {"form_page_first_page", "form_first_page"}
+            for entry in basic_entries:
                 self._raise_if_stop_requested()
-                report_name = _extract_entry_value(entry, "report_name", "report", "name")
-                if not report_name:
+                page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                name_value = _extract_entry_value(entry, "name", "report_name", "form_name")
+                if not name_value:
                     continue
                 page = _page_label_from_filename(
                     _extract_entry_value(entry, "file_name", "filename")
                 )
-                report_lines.append(_format_toc_line(report_name, page))
+                if page_type in form_first_types:
+                    form_lines.append(_format_toc_line(name_value, page))
+                elif page_type in report_types:
+                    report_lines.append(_format_toc_line(name_value, page))
             minute_order_lines: list[str] = []
             hearing_lines: list[str] = []
-            for file_name, page_type in _load_classify_date_targets(classify_basic_path):
+            minute_first_types = {"minute_order_first_page", "minute_order_page_first_page"}
+            hearing_first_types = {"hearing_page", "hearing_first_page", "hearing_page_first_page"}
+            for entry in basic_entries:
                 self._raise_if_stop_requested()
-                date_value = date_by_file.get(file_name, "").strip()
+                file_name = _extract_entry_value(entry, "file_name", "filename")
+                if not file_name:
+                    continue
+                page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                date_value = _extract_entry_value(entry, "date").strip()
+                if not date_value:
+                    continue
                 page = _page_label_from_filename(file_name)
                 line = _format_toc_line(date_value, page)
-                if page_type in {"minute_order_first_page", "minute_order_page_first_page"}:
+                if page_type in minute_first_types:
                     minute_order_lines.append(line)
-                elif page_type in {"hearing_first_page", "hearing_page_first_page"}:
+                elif page_type in hearing_first_types:
                     hearing_lines.append(line)
             toc_lines: list[str] = [
                 "FORMS",
@@ -3655,17 +3898,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Choose PDF files or select a saved case first.")
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
-            classify_basic_path = classification_dir / "basic_corrected_advanced.jsonl"
-            classify_dates_path = classification_dir / "dates.jsonl"
-            classify_report_names_path = classification_dir / "report_names.jsonl"
-            for path in (classify_basic_path, classify_dates_path, classify_report_names_path):
-                if not path.exists():
-                    raise FileNotFoundError(
-                        "Run Advanced classification and dates/names to generate classify JSONL files first."
-                    )
+            classify_basic_path = (
+                classification_dir / "basic_corrected_advanced_corrected_dates_names.jsonl"
+            )
+            if not classify_basic_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification dates and names to generate classify JSONL files first."
+                )
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_by_file: dict[str, str] = {}
-            for entry in _load_jsonl_entries(classify_dates_path):
+            report_name_by_file: dict[str, str] = {}
+            payload_entries = _load_jsonl_entries(classify_basic_path)
+            for entry in payload_entries:
                 self._raise_if_stop_requested()
                 file_name = _extract_entry_value(entry, "file_name", "filename")
                 if not file_name:
@@ -3673,20 +3917,28 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 date_value = _extract_entry_value(entry, "date")
                 if date_value:
                     date_by_file[file_name] = date_value
-            report_name_by_file: dict[str, str] = {}
-            for entry in _load_jsonl_entries(classify_report_names_path):
-                self._raise_if_stop_requested()
-                file_name = _extract_entry_value(entry, "file_name", "filename")
-                report_name = _extract_entry_value(entry, "report_name", "report", "name")
-                if file_name and report_name:
-                    report_name_by_file[file_name] = report_name
+                page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                name_value = _extract_entry_value(entry, "name", "report_name")
+                if page_type in {"report", "report_page"} and name_value:
+                    report_name_by_file[file_name] = name_value
             relevant_report_files: set[str] | None = None
             hearing_boundaries: list[dict[str, str]] = []
             report_boundaries: list[dict[str, str]] = []
             minutes_boundaries: list[dict[str, str]] = []
-            entries = _load_classify_basic_entries(classify_basic_path)
+            entries: list[tuple[str, str, int]] = []
+            for entry in payload_entries:
+                file_name = _extract_entry_value(entry, "file_name", "filename")
+                page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                if not file_name or not page_type:
+                    continue
+                page_number = _extract_page_number(file_name)
+                if page_number is None:
+                    continue
+                entries.append((file_name, page_type, page_number))
             if not entries:
-                raise FileNotFoundError("No entries found in basic_corrected_advanced.jsonl.")
+                raise FileNotFoundError(
+                    "No entries found in basic_corrected_advanced_corrected_dates_names.jsonl."
+                )
             current_report_start: str | None = None
             current_report_end: str | None = None
             report_sequence_relevant = False
