@@ -3569,7 +3569,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             hearing_types = {
                 "hearing",
                 "hearing_page",
-                "hearing_page_last_page",
             }
             minute_first_types = {"minute_order_page_first_page", "minute_order_first_page"}
             previous_hearing = False
