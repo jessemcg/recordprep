@@ -1025,9 +1025,12 @@ def save_classifier_settings(api_url: str, model_id: str, api_key: str, prompt: 
 
 def load_advanced_classify_settings() -> dict[str, str]:
     config = _read_config()
-    api_url = str(config.get(CONFIG_KEY_ADVANCED_CLASSIFY_API_URL, "") or "").strip()
-    model_id = str(config.get(CONFIG_KEY_ADVANCED_CLASSIFY_MODEL_ID, "") or "").strip()
-    api_key = str(config.get(CONFIG_KEY_ADVANCED_CLASSIFY_API_KEY, "") or "").strip()
+    shared = load_classifier_settings()
+    api_url = shared["api_url"] or str(config.get(CONFIG_KEY_ADVANCED_CLASSIFY_API_URL, "") or "").strip()
+    model_id = shared["model_id"] or str(
+        config.get(CONFIG_KEY_ADVANCED_CLASSIFY_MODEL_ID, "") or ""
+    ).strip()
+    api_key = shared["api_key"] or str(config.get(CONFIG_KEY_ADVANCED_CLASSIFY_API_KEY, "") or "").strip()
     hearing_prompt = str(
         config.get(CONFIG_KEY_ADVANCED_CLASSIFY_HEARING_PROMPT, DEFAULT_ADVANCED_HEARING_PROMPT)
         or ""
@@ -1050,17 +1053,11 @@ def load_advanced_classify_settings() -> dict[str, str]:
 
 
 def save_advanced_classify_settings(
-    api_url: str,
-    model_id: str,
-    api_key: str,
     hearing_prompt: str,
     minute_prompt: str,
     form_prompt: str,
 ) -> None:
     config = _read_config()
-    config[CONFIG_KEY_ADVANCED_CLASSIFY_API_URL] = api_url
-    config[CONFIG_KEY_ADVANCED_CLASSIFY_MODEL_ID] = model_id
-    config[CONFIG_KEY_ADVANCED_CLASSIFY_API_KEY] = api_key
     config[CONFIG_KEY_ADVANCED_CLASSIFY_HEARING_PROMPT] = (
         hearing_prompt or DEFAULT_ADVANCED_HEARING_PROMPT
     )
@@ -1074,9 +1071,12 @@ def save_advanced_classify_settings(
 
 def load_classify_dates_settings() -> dict[str, str]:
     config = _read_config()
-    api_url = str(config.get(CONFIG_KEY_CLASSIFY_DATES_API_URL, "") or "").strip()
-    model_id = str(config.get(CONFIG_KEY_CLASSIFY_DATES_MODEL_ID, "") or "").strip()
-    api_key = str(config.get(CONFIG_KEY_CLASSIFY_DATES_API_KEY, "") or "").strip()
+    shared = load_classifier_settings()
+    api_url = shared["api_url"] or str(config.get(CONFIG_KEY_CLASSIFY_DATES_API_URL, "") or "").strip()
+    model_id = shared["model_id"] or str(
+        config.get(CONFIG_KEY_CLASSIFY_DATES_MODEL_ID, "") or ""
+    ).strip()
+    api_key = shared["api_key"] or str(config.get(CONFIG_KEY_CLASSIFY_DATES_API_KEY, "") or "").strip()
     hearing_prompt = str(
         config.get(CONFIG_KEY_CLASSIFY_DATES_HEARING_PROMPT, DEFAULT_CLASSIFY_HEARING_DATES_PROMPT)
         or ""
@@ -1095,16 +1095,10 @@ def load_classify_dates_settings() -> dict[str, str]:
 
 
 def save_classify_dates_settings(
-    api_url: str,
-    model_id: str,
-    api_key: str,
     hearing_prompt: str,
     minute_prompt: str,
 ) -> None:
     config = _read_config()
-    config[CONFIG_KEY_CLASSIFY_DATES_API_URL] = api_url
-    config[CONFIG_KEY_CLASSIFY_DATES_MODEL_ID] = model_id
-    config[CONFIG_KEY_CLASSIFY_DATES_API_KEY] = api_key
     config[CONFIG_KEY_CLASSIFY_DATES_HEARING_PROMPT] = (
         hearing_prompt or DEFAULT_CLASSIFY_HEARING_DATES_PROMPT
     )
@@ -1116,9 +1110,12 @@ def save_classify_dates_settings(
 
 def load_classify_names_settings() -> dict[str, str]:
     config = _read_config()
-    api_url = str(config.get(CONFIG_KEY_CLASSIFY_NAMES_API_URL, "") or "").strip()
-    model_id = str(config.get(CONFIG_KEY_CLASSIFY_NAMES_MODEL_ID, "") or "").strip()
-    api_key = str(config.get(CONFIG_KEY_CLASSIFY_NAMES_API_KEY, "") or "").strip()
+    shared = load_classifier_settings()
+    api_url = shared["api_url"] or str(config.get(CONFIG_KEY_CLASSIFY_NAMES_API_URL, "") or "").strip()
+    model_id = shared["model_id"] or str(
+        config.get(CONFIG_KEY_CLASSIFY_NAMES_MODEL_ID, "") or ""
+    ).strip()
+    api_key = shared["api_key"] or str(config.get(CONFIG_KEY_CLASSIFY_NAMES_API_KEY, "") or "").strip()
     report_prompt = str(
         config.get(CONFIG_KEY_CLASSIFY_NAMES_REPORT_PROMPT, DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT)
         or ""
@@ -1136,16 +1133,10 @@ def load_classify_names_settings() -> dict[str, str]:
 
 
 def save_classify_names_settings(
-    api_url: str,
-    model_id: str,
-    api_key: str,
     report_prompt: str,
     form_prompt: str,
 ) -> None:
     config = _read_config()
-    config[CONFIG_KEY_CLASSIFY_NAMES_API_URL] = api_url
-    config[CONFIG_KEY_CLASSIFY_NAMES_MODEL_ID] = model_id
-    config[CONFIG_KEY_CLASSIFY_NAMES_API_KEY] = api_key
     config[CONFIG_KEY_CLASSIFY_NAMES_REPORT_PROMPT] = (
         report_prompt or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT
     )
@@ -1235,27 +1226,18 @@ class ClassifySettingsWidgets:
 
 @dataclass
 class ClassifyDatesSettingsWidgets:
-    api_url_row: Adw.EntryRow
-    model_row: Adw.EntryRow
-    api_key_row: Adw.EntryRow
     hearing_prompt_buffer: Gtk.TextBuffer
     minute_prompt_buffer: Gtk.TextBuffer
 
 
 @dataclass
 class ClassifyNamesSettingsWidgets:
-    api_url_row: Adw.EntryRow
-    model_row: Adw.EntryRow
-    api_key_row: Adw.EntryRow
     report_prompt_buffer: Gtk.TextBuffer
     form_prompt_buffer: Gtk.TextBuffer
 
 
 @dataclass
 class AdvancedClassificationSettingsWidgets:
-    api_url_row: Adw.EntryRow
-    model_row: Adw.EntryRow
-    api_key_row: Adw.EntryRow
     hearing_prompt_buffer: Gtk.TextBuffer
     minute_prompt_buffer: Gtk.TextBuffer
     form_prompt_buffer: Gtk.TextBuffer
@@ -1784,22 +1766,9 @@ class SettingsWindow(Adw.ApplicationWindow):
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
-        credentials_group = Adw.PreferencesGroup(title="Credentials")
-        credentials_group.add_css_class("list-stack")
-        credentials_group.set_hexpand(True)
-        page_box.append(credentials_group)
-
-        api_url_row = Adw.EntryRow(title="API URL")
-        api_url_row.set_text(settings.get("api_url", ""))
-        credentials_group.add(api_url_row)
-
-        model_row = Adw.EntryRow(title="Model ID (optional)")
-        model_row.set_text(settings.get("model_id", ""))
-        credentials_group.add(model_row)
-
-        api_key_row = self._build_password_row("API Key")
-        api_key_row.set_text(settings.get("api_key", ""))
-        credentials_group.add(api_key_row)
+        info_label = Gtk.Label(label="Uses Classification basic credentials.", xalign=0)
+        info_label.add_css_class("dim-label")
+        page_box.append(info_label)
 
         prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         prompt_section.set_hexpand(True)
@@ -1838,9 +1807,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.set_child(page_box)
 
         self._advanced_classify_widgets = AdvancedClassificationSettingsWidgets(
-            api_url_row=api_url_row,
-            model_row=model_row,
-            api_key_row=api_key_row,
             hearing_prompt_buffer=hearing_buffer,
             minute_prompt_buffer=minute_buffer,
             form_prompt_buffer=forms_buffer,
@@ -1861,22 +1827,9 @@ class SettingsWindow(Adw.ApplicationWindow):
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
-        credentials_group = Adw.PreferencesGroup(title="Credentials")
-        credentials_group.add_css_class("list-stack")
-        credentials_group.set_hexpand(True)
-        page_box.append(credentials_group)
-
-        api_url_row = Adw.EntryRow(title="API URL")
-        api_url_row.set_text(settings.get("api_url", ""))
-        credentials_group.add(api_url_row)
-
-        model_row = Adw.EntryRow(title="Model ID (optional)")
-        model_row.set_text(settings.get("model_id", ""))
-        credentials_group.add(model_row)
-
-        api_key_row = self._build_password_row("API Key")
-        api_key_row.set_text(settings.get("api_key", ""))
-        credentials_group.add(api_key_row)
+        info_label = Gtk.Label(label="Uses Classification basic credentials.", xalign=0)
+        info_label.add_css_class("dim-label")
+        page_box.append(info_label)
 
         prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         prompt_section.set_hexpand(True)
@@ -1907,9 +1860,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.set_child(page_box)
 
         self._classify_dates_widgets = ClassifyDatesSettingsWidgets(
-            api_url_row=api_url_row,
-            model_row=model_row,
-            api_key_row=api_key_row,
             hearing_prompt_buffer=hearing_buffer,
             minute_prompt_buffer=minute_buffer,
         )
@@ -1929,22 +1879,9 @@ class SettingsWindow(Adw.ApplicationWindow):
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
-        credentials_group = Adw.PreferencesGroup(title="Credentials")
-        credentials_group.add_css_class("list-stack")
-        credentials_group.set_hexpand(True)
-        page_box.append(credentials_group)
-
-        api_url_row = Adw.EntryRow(title="API URL")
-        api_url_row.set_text(settings.get("api_url", ""))
-        credentials_group.add(api_url_row)
-
-        model_row = Adw.EntryRow(title="Model ID (optional)")
-        model_row.set_text(settings.get("model_id", ""))
-        credentials_group.add(model_row)
-
-        api_key_row = self._build_password_row("API Key")
-        api_key_row.set_text(settings.get("api_key", ""))
-        credentials_group.add(api_key_row)
+        info_label = Gtk.Label(label="Uses Classification basic credentials.", xalign=0)
+        info_label.add_css_class("dim-label")
+        page_box.append(info_label)
 
         prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         prompt_section.set_hexpand(True)
@@ -1975,9 +1912,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.set_child(page_box)
 
         self._classify_names_widgets = ClassifyNamesSettingsWidgets(
-            api_url_row=api_url_row,
-            model_row=model_row,
-            api_key_row=api_key_row,
             report_prompt_buffer=reports_buffer,
             form_prompt_buffer=forms_buffer,
         )
@@ -2267,26 +2201,17 @@ class SettingsWindow(Adw.ApplicationWindow):
             )
         if advanced_classify_widgets:
             save_advanced_classify_settings(
-                advanced_classify_widgets.api_url_row.get_text().strip(),
-                advanced_classify_widgets.model_row.get_text().strip(),
-                advanced_classify_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(advanced_classify_widgets.hearing_prompt_buffer).strip(),
                 self._prompt_text(advanced_classify_widgets.minute_prompt_buffer).strip(),
                 self._prompt_text(advanced_classify_widgets.form_prompt_buffer).strip(),
             )
         if classify_dates_widgets:
             save_classify_dates_settings(
-                classify_dates_widgets.api_url_row.get_text().strip(),
-                classify_dates_widgets.model_row.get_text().strip(),
-                classify_dates_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(classify_dates_widgets.hearing_prompt_buffer).strip(),
                 self._prompt_text(classify_dates_widgets.minute_prompt_buffer).strip(),
             )
         if classify_names_widgets:
             save_classify_names_settings(
-                classify_names_widgets.api_url_row.get_text().strip(),
-                classify_names_widgets.model_row.get_text().strip(),
-                classify_names_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(classify_names_widgets.report_prompt_buffer).strip(),
                 self._prompt_text(classify_names_widgets.form_prompt_buffer).strip(),
             )
@@ -3510,7 +3435,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             settings = load_advanced_classify_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError(
-                    "Configure advanced classification API URL, model ID, and API key in Settings."
+                    "Configure classification API URL, model ID, and API key in Settings."
                 )
             entries = _load_jsonl_entries(classify_basic_path)
             if not entries:
@@ -3687,7 +3612,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             settings = load_classify_dates_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError(
-                    "Configure classification dates API URL, model ID, and API key in Settings."
+                    "Configure classification API URL, model ID, and API key in Settings."
                 )
             entries = _load_jsonl_entries(classify_basic_path)
             if not entries:
@@ -3809,7 +3734,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             settings = load_classify_names_settings()
             if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
                 raise ValueError(
-                    "Configure classification names API URL, model ID, and API key in Settings."
+                    "Configure classification API URL, model ID, and API key in Settings."
                 )
             entries = _load_jsonl_entries(dates_path)
             if not entries:
