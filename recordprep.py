@@ -2474,7 +2474,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.step_correct_toc_row = Adw.ActionRow(
             title="Correct TOC",
-            subtitle="Remove duplicate minute order dates.",
+            subtitle="Remove duplicate minute order dates in the TOC.",
         )
         self.step_correct_toc_row.set_activatable(True)
         self.step_correct_toc_row.connect("activated", self.on_step_correct_toc_clicked)
@@ -2483,7 +2483,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.step_seven_row = Adw.ActionRow(
             title="Find boundaries",
-            subtitle="Determine page ranges for hearing, report, and minute order sections.",
+            subtitle="Determine page ranges for hearings, named reports, and dated minute orders.",
         )
         self.step_seven_row.set_activatable(True)
         self.step_seven_row.connect("activated", self.on_step_seven_clicked)
