@@ -2326,6 +2326,62 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.close()
 
 
+class TocEditorWindow(Adw.ApplicationWindow):
+    def __init__(
+        self,
+        app: Adw.Application,
+        toc_path: Path,
+        on_saved: Callable[[Path], None] | None = None,
+    ) -> None:
+        super().__init__(application=app, title="Edit TOC")
+        self.set_default_size(800, 600)
+        self.set_resizable(True)
+        self._toc_path = toc_path
+        self._on_saved = on_saved
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.add_css_class("flat")
+        header.set_title_widget(Gtk.Label(label="Edit TOC", xalign=0))
+        save_button = Gtk.Button(label="Save")
+        save_button.add_css_class("flat")
+        save_button.connect("clicked", self._on_save_clicked)
+        header.pack_end(save_button)
+        view.add_top_bar(header)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_hexpand(True)
+        scroller.set_vexpand(True)
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+
+        text_view = Gtk.TextView()
+        text_view.set_wrap_mode(Gtk.WrapMode.NONE)
+        text_view.set_monospace(True)
+        text_view.set_vexpand(True)
+        text_view.set_hexpand(True)
+        buffer = text_view.get_buffer()
+        initial_text = ""
+        if self._toc_path.exists():
+            initial_text = self._toc_path.read_text(encoding="utf-8", errors="ignore")
+        buffer.set_text(initial_text)
+        scroller.set_child(text_view)
+        view.set_content(scroller)
+        self.set_content(view)
+
+        self._text_view = text_view
+
+    def _on_save_clicked(self, _button: Gtk.Button) -> None:
+        buffer = self._text_view.get_buffer()
+        start = buffer.get_start_iter()
+        end = buffer.get_end_iter()
+        content = buffer.get_text(start, end, True)
+        self._toc_path.write_text(content.rstrip() + "\n", encoding="utf-8")
+        if self._on_saved:
+            self._on_saved(self._toc_path)
+
+
 class RecordPrepWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app, title=APPLICATION_NAME)
@@ -2333,6 +2389,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.selected_pdfs: list[Path] = []
         self._settings_window: SettingsWindow | None = None
+        self._toc_editor_window: TocEditorWindow | None = None
         self._pipeline_running = False
         self._stop_event = threading.Event()
         self._step_status_labels: dict[Adw.ActionRow, Gtk.Label] = {}
@@ -2388,6 +2445,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.resume_button.set_halign(Gtk.Align.START)
         self.resume_button.connect("clicked", self.on_resume_clicked)
         action_box.append(self.resume_button)
+
+        self.edit_toc_button = Gtk.Button(label="Edit TOC")
+        self.edit_toc_button.set_halign(Gtk.Align.START)
+        self.edit_toc_button.set_sensitive(False)
+        self.edit_toc_button.connect("clicked", self.on_edit_toc_clicked)
+        action_box.append(self.edit_toc_button)
         content.append(action_box)
 
         self.step_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
@@ -2588,8 +2651,43 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self._settings_window.trigger_save()
 
+    def on_edit_toc_clicked(self, _button: Gtk.Button) -> None:
+        toc_path = self._toc_path()
+        if not toc_path or not toc_path.exists():
+            self.show_toast("Run Build TOC to generate artifacts/toc.txt first.")
+            self._update_toc_button()
+            return
+        if self._toc_editor_window:
+            self._toc_editor_window.present()
+            return
+        editor = TocEditorWindow(
+            self.get_application(),
+            toc_path,
+            on_saved=self._on_toc_editor_saved,
+        )
+        editor.connect("close-request", self._on_toc_editor_close_request)
+        self._toc_editor_window = editor
+        editor.present()
+
+    def _on_toc_editor_saved(self, _path: Path) -> None:
+        self.show_toast("TOC saved.")
+
+    def _on_toc_editor_close_request(self, _window: TocEditorWindow) -> bool:
+        self._toc_editor_window = None
+        return False
+
     def show_toast(self, message: str) -> None:
         self.toast_overlay.add_toast(Adw.Toast(title=message))
+
+    def _toc_path(self) -> Path | None:
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            return None
+        return root_dir / "artifacts" / "toc.txt"
+
+    def _update_toc_button(self) -> None:
+        toc_path = self._toc_path()
+        self.edit_toc_button.set_sensitive(bool(toc_path and toc_path.exists()))
 
     def _set_status(self, message: str, active: bool) -> None:
         self.status_label.set_text(message)
@@ -2690,6 +2788,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._reset_step_statuses()
         self.selected_label.set_text(f"Selected: {label}")
         self.show_toast(f"Selected: {label}")
+        self._update_toc_button()
 
     def _load_selected_pdfs(self) -> None:
         self.selected_pdfs = load_selected_pdfs()
@@ -2702,12 +2801,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self._reset_step_statuses()
         self.selected_label.set_text(f"Selected: {label}")
+        self._update_toc_button()
 
     def _load_case_context(self) -> None:
         case_name, _root_dir = load_case_context()
         if case_name:
             display_name = case_name.replace("_", " ") if case_name else case_name
             self.selected_label.set_text(f"Selected: {display_name}")
+        self._update_toc_button()
 
     def _pipeline_steps(self) -> list[tuple[str, Adw.ActionRow, Callable[[], bool]]]:
         return [
@@ -3243,6 +3344,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.resume_button.set_sensitive(True)
         self.step_list.set_sensitive(True)
         self._stop_status()
+        self._update_toc_button()
         if stop_requested:
             self.show_toast("Pipeline stopped.")
         elif success:
@@ -3908,6 +4010,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._finish_step, self.step_six_row, success)
             GLib.idle_add(self._stop_status_if_idle)
             GLib.idle_add(self._stop_button_if_idle)
+            GLib.idle_add(self._update_toc_button)
         return success is True
 
     def _run_step_correct_toc(self) -> bool:
@@ -3975,6 +4078,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._finish_step, self.step_correct_toc_row, success)
             GLib.idle_add(self._stop_status_if_idle)
             GLib.idle_add(self._stop_button_if_idle)
+            GLib.idle_add(self._update_toc_button)
         return success is True
 
     def _run_step_seven(self) -> bool:
