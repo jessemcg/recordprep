@@ -3386,11 +3386,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             total = len(corrected)
 
             def _bridge_page_type(target: str) -> None:
+                source = list(corrected)
                 for index in range(1, total - 1):
                     self._raise_if_stop_requested()
-                    if corrected[index - 1] == target and corrected[index + 1] == target:
-                        if corrected[index] != target:
+                    if source[index - 1] == target and source[index + 1] == target:
+                        if source[index] != target:
                             corrected[index] = target
+                for index in range(1, total - 2):
+                    self._raise_if_stop_requested()
+                    if source[index - 1] == target and source[index + 2] == target:
+                        if source[index] != target and source[index + 1] != target:
+                            corrected[index] = target
+                            corrected[index + 1] = target
 
             _bridge_page_type("hearing_page")
             _bridge_page_type("report_page")
