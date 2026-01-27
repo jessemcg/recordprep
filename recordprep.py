@@ -2339,6 +2339,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         header_bar = Adw.HeaderBar()
 
+        self.case_bundle_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
+        self.case_bundle_button.set_tooltip_text("Choose case bundle")
+        self.case_bundle_button.add_css_class("flat")
+        self.case_bundle_button.connect("clicked", self.on_choose_case_bundle)
+        header_bar.pack_start(self.case_bundle_button)
+
         self.file_button = Gtk.Button.new_from_icon_name("list-add-symbolic")
         self.file_button.set_tooltip_text("Choose PDF(s)")
         self.file_button.add_css_class("flat")
@@ -2557,6 +2563,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._load_selected_pdfs()
         self._load_case_context()
         self._set_status(APPLICATION_NAME, False)
+        self._refresh_step_statuses_from_artifacts()
 
     def _setup_menu(self, app: Adw.Application) -> None:
         menu = Gio.Menu()
@@ -2654,6 +2661,93 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         for row in self._step_status_labels:
             self._set_step_status(row, "Pending")
 
+    def _refresh_step_statuses_from_artifacts(self) -> None:
+        if self._pipeline_running:
+            return
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            return
+
+        def _dir_has_files(path: Path, pattern: str) -> bool:
+            try:
+                return path.exists() and any(path.glob(pattern))
+            except OSError:
+                return False
+
+        def _set_if_pending(row: Adw.ActionRow, created: bool) -> None:
+            if not created:
+                return
+            label = self._step_status_labels.get(row)
+            if label is None:
+                return
+            if label.get_text() == "Pending":
+                self._set_step_status(row, "Created")
+
+        text_dir = root_dir / "text_pages"
+        image_dir = root_dir / "image_pages"
+        classification_dir = root_dir / "classification"
+        artifacts_dir = root_dir / "artifacts"
+        rag_dir = root_dir / "rag"
+
+        _set_if_pending(
+            self.step_one_row,
+            _dir_has_files(text_dir, "*.txt") and _dir_has_files(image_dir, "*.png"),
+        )
+        _set_if_pending(self.step_strip_nonstandard_row, _dir_has_files(text_dir, "*.txt"))
+        _set_if_pending(self.step_infer_case_row, (root_dir / "case_name.txt").exists())
+        _set_if_pending(self.step_two_row, (classification_dir / "basic.jsonl").exists())
+        _set_if_pending(
+            self.step_correct_basic_row,
+            (classification_dir / "basic_corrected.jsonl").exists(),
+        )
+        _set_if_pending(
+            self.step_advanced_row,
+            (classification_dir / "basic_corrected_advanced.jsonl").exists(),
+        )
+        _set_if_pending(
+            self.step_advanced_correct_row,
+            (classification_dir / "basic_corrected_advanced_corrected.jsonl").exists(),
+        )
+        _set_if_pending(
+            self.step_dates_row,
+            (classification_dir / "basic_corrected_advanced_corrected_dates.jsonl").exists(),
+        )
+        _set_if_pending(
+            self.step_names_row,
+            (classification_dir / "basic_corrected_advanced_corrected_dates_names.jsonl").exists(),
+        )
+        _set_if_pending(self.step_six_row, (artifacts_dir / "toc.txt").exists())
+        _set_if_pending(self.step_correct_toc_row, (artifacts_dir / "toc.txt").exists())
+        _set_if_pending(
+            self.step_seven_row,
+            (artifacts_dir / "hearing_boundaries.json").exists()
+            and (artifacts_dir / "report_boundaries.json").exists()
+            and (artifacts_dir / "minutes_boundaries.json").exists(),
+        )
+        _set_if_pending(
+            self.step_eight_row,
+            (artifacts_dir / "raw_hearings.txt").exists()
+            and (artifacts_dir / "raw_reports.txt").exists(),
+        )
+        _set_if_pending(
+            self.step_nine_row,
+            (artifacts_dir / "optimized_hearings.txt").exists()
+            and (artifacts_dir / "optimized_reports.txt").exists(),
+        )
+        summaries_path, reports_path = _summary_output_paths(root_dir)
+        minutes_path = _minutes_summary_output_path(root_dir)
+        _set_if_pending(
+            self.step_ten_row,
+            summaries_path.exists() and reports_path.exists() and minutes_path.exists(),
+        )
+        _set_if_pending(self.step_eleven_row, (rag_dir / "case_overview.txt").exists())
+        _set_if_pending(
+            self.step_twelve_row,
+            rag_dir.exists()
+            and (rag_dir / "vector_database").exists()
+            and _dir_has_files(rag_dir / "vector_database", "*"),
+        )
+
     def _finish_step(self, row: Adw.ActionRow, success: bool | None) -> None:
         if success is None:
             self._set_step_status(row, "Stopped")
@@ -2703,6 +2797,53 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         dialog.set_default_filter(file_filter)
         dialog.open_multiple(self, None, self._on_files_chosen)
 
+    def on_choose_case_bundle(self, _button: Gtk.Button) -> None:
+        if self._pipeline_running:
+            self.show_toast("Stop the pipeline before choosing a case bundle.")
+            return
+        dialog = Gtk.FileDialog(title="Choose case bundle folder")
+        base_dir = self._resolve_case_base()
+        if base_dir is not None:
+            dialog.set_initial_folder(Gio.File.new_for_path(str(base_dir)))
+        dialog.select_folder(self, None, self._on_case_bundle_chosen)
+
+    def _on_case_bundle_chosen(
+        self, dialog: Gtk.FileDialog, result: Gio.AsyncResult
+    ) -> None:
+        try:
+            folder = dialog.select_folder_finish(result)
+        except GLib.Error:
+            return
+        if not isinstance(folder, Gio.File):
+            return
+        selected_path = folder.get_path()
+        if not selected_path:
+            return
+        selected = Path(selected_path)
+        root_dir: Path | None = None
+        base_dir: Path | None = None
+        if selected.name == "case_bundle":
+            root_dir = selected
+            base_dir = selected.parent
+        elif (selected / "case_bundle").is_dir():
+            base_dir = selected
+            root_dir = selected / "case_bundle"
+        if root_dir is None or base_dir is None or not root_dir.exists():
+            self.show_toast("Choose a case_bundle folder or its parent directory.")
+            return
+        case_name = _load_case_name_from_file(root_dir)
+        if not case_name:
+            case_name = _sanitize_case_name_value(base_dir.name)
+        save_case_context(case_name, base_dir)
+        self.selected_pdfs = []
+        save_selected_pdfs([])
+        display_name = case_name.replace("_", " ") if case_name else "case bundle"
+        self.selected_label.set_text(f"Selected: {display_name}")
+        self.show_toast(f"Selected: {display_name}")
+        self._reset_step_statuses()
+        self._update_toc_button()
+        self._refresh_step_statuses_from_artifacts()
+
     def _on_files_chosen(
         self, dialog: Gtk.FileDialog, result: Gio.AsyncResult
     ) -> None:
@@ -2732,6 +2873,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.selected_label.set_text(f"Selected: {label}")
         self.show_toast(f"Selected: {label}")
         self._update_toc_button()
+        self._refresh_step_statuses_from_artifacts()
 
     def _load_selected_pdfs(self) -> None:
         self.selected_pdfs = load_selected_pdfs()
@@ -2745,6 +2887,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._reset_step_statuses()
         self.selected_label.set_text(f"Selected: {label}")
         self._update_toc_button()
+        self._refresh_step_statuses_from_artifacts()
 
     def _load_case_context(self) -> None:
         case_name, _root_dir = load_case_context()
@@ -2752,6 +2895,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             display_name = case_name.replace("_", " ") if case_name else case_name
             self.selected_label.set_text(f"Selected: {display_name}")
         self._update_toc_button()
+        self._refresh_step_statuses_from_artifacts()
 
     def _pipeline_steps(self) -> list[tuple[str, Adw.ActionRow, Callable[[], bool]]]:
         return [
