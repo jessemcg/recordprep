@@ -596,25 +596,7 @@ def _split_tagged_sections(text: str) -> list[tuple[str, str]]:
 
 
 def _split_into_sentences(text: str) -> list[str]:
-    if not text:
-        return []
-    cleaned_lines: list[str] = []
-    for raw_line in text.splitlines():
-        if not raw_line.strip():
-            continue
-        line = re.sub(r"^\s*\d+\s+", "", raw_line)
-        line = re.sub(r"\s+", " ", line).strip()
-        if not line:
-            continue
-        if cleaned_lines:
-            previous = cleaned_lines[-1]
-            if previous.endswith("-") and line[:1].isalpha():
-                cleaned_lines[-1] = previous[:-1] + line
-            else:
-                cleaned_lines.append(line)
-        else:
-            cleaned_lines.append(line)
-    normalized = " ".join(cleaned_lines).strip()
+    normalized = re.sub(r"\s+", " ", text).strip()
     if not normalized:
         return []
     parts = re.split(r"(?<=[.!?])\s+", normalized)
