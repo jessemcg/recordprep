@@ -4328,16 +4328,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         index += 1
                         if entry_type == "hearing" and last_type == "hearing_page_last_page":
                             break
-                    self._append_boundary_entry(
-                        entry_type,
-                        file_name,
-                        end_file,
-                        date_by_file,
-                        report_name_by_file,
-                        hearing_boundaries,
-                        report_boundaries,
-                        minutes_boundaries,
-                    )
+                    if entry_type == "minute_order" or last_type == "hearing_page_last_page":
+                        self._append_boundary_entry(
+                            entry_type,
+                            file_name,
+                            end_file,
+                            date_by_file,
+                            report_name_by_file,
+                            hearing_boundaries,
+                            report_boundaries,
+                            minutes_boundaries,
+                        )
                     continue
                 index += 1
             hearing_path = derived_dir / "hearing_boundaries.json"
