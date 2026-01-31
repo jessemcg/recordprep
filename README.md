@@ -3,12 +3,7 @@
 Record Prep is a GTK4/Libadwaita desktop app that turns OCR'd legal transcript PDFs into a structured
 case bundle with classifications, summaries, and retrieval-ready artifacts for appellate workflows.
 
-<p>
-  <img src="recordprep_icon.png" alt="Record Prep icon" width="96">
-</p>
-<p>
-  <img src="recordprep_screenshot.png" alt="Record Prep screenshot" width="900">
-</p>
+<img src="recordprep_icon.png" alt="Record Prep icon" width="128" align="left">
 
 ## What it does
 - Imports one or more PDFs (merged in natural sort order).
@@ -17,6 +12,8 @@ case bundle with classifications, summaries, and retrieval-ready artifacts for a
 - Finds hearing/report/minute order boundaries.
 - Generates raw and optimized text, summaries, and a case overview.
 - Optionally builds a VoyageAI/Chroma RAG index from summarized content.
+
+<img src="recordprep_screenshot.png" alt="Record Prep screenshot" width="720">
 
 ## Requirements
 - Python 3.13+
