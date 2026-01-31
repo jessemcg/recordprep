@@ -1,0 +1,74 @@
+# Record Prep
+
+Record Prep is a GTK4/Libadwaita desktop app that turns OCR'd legal transcript PDFs into a structured
+case bundle with classifications, summaries, and retrieval-ready artifacts for appellate workflows.
+
+<p>
+  <img src="recordprep_icon.png" alt="Record Prep icon" width="96">
+</p>
+<p>
+  <img src="recordprep_screenshot.png" alt="Record Prep screenshot" width="900">
+</p>
+
+## What it does
+- Imports one or more PDFs (merged in natural sort order).
+- Extracts per-page text and grayscale page images.
+- Classifies pages, adds dates/names, and builds a table of contents.
+- Finds hearing/report/minute order boundaries.
+- Generates raw and optimized text, summaries, and a case overview.
+- Optionally builds a VoyageAI/Chroma RAG index from summarized content.
+
+## Requirements
+- Python 3.13+
+- GTK4/Libadwaita (via `pygobject`)
+- `pdftotext` Python bindings, PyMuPDF, PyPDF, LangChain + Chroma + VoyageAI (for RAG)
+
+## Quick start
+```bash
+uv run recordprep.py
+```
+
+## Using the app
+1. Click the folder button to choose an existing `case_bundle` folder or its parent directory.
+2. Click the list-add button to select one or more PDFs from the same folder.
+3. Run individual steps or click "Run all steps".
+4. Use the menu button to open Settings and configure API endpoints, models, keys, and prompts.
+
+## Output layout
+A `case_bundle/` folder is created next to the selected PDFs (or reused if already present):
+```
+case_bundle/
+  case_name.txt
+  manifest.json
+  text_pages/           # 0001.txt, 0002.txt, ...
+  image_pages/          # 0001.png, 0002.png, ... (300 DPI grayscale)
+  classification/       # basic.jsonl, basic_corrected.jsonl, ...
+  artifacts/            # toc.txt, boundary json, raw/optimized text
+  summaries/            # hearings_sum_<case>.txt, reports_sum_<case>.txt, minutes_sum_<case>.txt (or summarized_*.txt)
+  rag/                  # case_overview.txt, vector_database/
+  checkpoints/          # resume data for optimize/summarize
+  temp/                 # merged.pdf (when multiple PDFs are selected)
+```
+
+## Pipeline steps
+- Create files: generate `text_pages/` and `image_pages/` and merge PDFs when needed.
+- Strip characters: remove non-printing characters from extracted text.
+- Infer case: derive the case name from the first pages and save `case_name.txt`.
+- Classification basic: classify every page into major page types.
+- Correct basic classification: fix common page-type gaps.
+- Advanced classification: mark hearing last pages, minute/form first pages.
+- Correct advanced classification: remove consecutive hearing last-page markers.
+- Classification dates: add hearing and minute order dates.
+- Classification names: add report and form names.
+- Build TOC: generate `artifacts/toc.txt`.
+- Correct TOC: remove duplicate minute order dates.
+- Find boundaries: write hearing/report/minute boundaries JSON.
+- Create raw: compile raw hearing and report text files.
+- Create optimized: LLM-reformat text for retrieval.
+- Create summaries: generate hearing/report/minute summaries (case-named when available).
+- Case overview: create a three-paragraph RAG overview.
+- Create RAG index: build a VoyageAI/Chroma vector store.
+
+## Settings
+Settings are stored in `config.json` next to `recordprep.py` and include API URLs, model IDs,
+keys, and prompts for each LLM-backed step.
