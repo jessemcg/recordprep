@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+
 from __future__ import annotations
 
 import datetime
@@ -29,6 +29,7 @@ from pypdf import PdfReader, PdfWriter
 
 APPLICATION_ID = "com.mcglaw.RecordPrep"
 APPLICATION_NAME = "Record Prep"
+STARTUP_LOG_PATH = Path("/tmp/recordprep_startup.log")
 
 GLib.set_application_name(APPLICATION_NAME)
 
@@ -40,6 +41,15 @@ LLM_RETRYABLE_HTTP_CODES = {408, 409, 429, 500, 502, 503, 504}
 
 class StopRequested(RuntimeError):
     pass
+
+
+def _log_startup(message: str) -> None:
+    try:
+        timestamp = datetime.datetime.now().isoformat(sep=" ", timespec="seconds")
+        with STARTUP_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(f"{timestamp} {message}\n")
+    except OSError:
+        pass
 
 CONFIG_FILE = Path(__file__).with_name("config.json")
 CONFIG_KEY_CLASSIFIER_API_URL = "classifier_api_url"
@@ -68,6 +78,9 @@ CONFIG_KEY_ADVANCED_CLASSIFY_API_KEY = "advanced_classify_api_key"
 CONFIG_KEY_ADVANCED_CLASSIFY_HEARING_PROMPT = "advanced_classify_hearing_prompt"
 CONFIG_KEY_ADVANCED_CLASSIFY_MINUTE_PROMPT = "advanced_classify_minute_prompt"
 CONFIG_KEY_ADVANCED_CLASSIFY_FORM_PROMPT = "advanced_classify_form_prompt"
+
+MAX_CASE_NAME_LEN = 120
+MAX_CASE_NAME_DISPLAY_LEN = 80
 CONFIG_KEY_CLASSIFY_FORMS_API_URL = "classify_form_names_api_url"
 CONFIG_KEY_CLASSIFY_FORMS_MODEL_ID = "classify_form_names_model_id"
 CONFIG_KEY_CLASSIFY_FORMS_API_KEY = "classify_form_names_api_key"
@@ -527,6 +540,25 @@ def _sanitize_case_name_value(value: str) -> str:
     cleaned = re.sub(r"\s+", "_", trimmed)
     cleaned = re.sub(r"_+", "_", cleaned)
     return cleaned.strip("_")
+
+
+def _normalize_case_name(value: str) -> str:
+    sanitized = _sanitize_case_name_value(value)
+    if not sanitized:
+        return ""
+    if len(sanitized) > MAX_CASE_NAME_LEN:
+        sanitized = sanitized[:MAX_CASE_NAME_LEN].rstrip("_")
+    return sanitized
+
+
+def _display_case_name(value: str) -> str:
+    sanitized = _normalize_case_name(value)
+    if not sanitized:
+        return ""
+    display = sanitized.replace("_", " ")
+    if len(display) > MAX_CASE_NAME_DISPLAY_LEN:
+        display = f"{display[:MAX_CASE_NAME_DISPLAY_LEN - 3]}..."
+    return display
 
 
 def _load_case_name_from_file(root_dir: Path) -> str:
@@ -1171,6 +1203,11 @@ def save_case_name_settings(api_url: str, model_id: str, api_key: str, prompt: s
 def load_case_context() -> tuple[str, Path | None]:
     config = _read_config()
     case_name = str(config.get(CONFIG_KEY_CASE_NAME, "") or "").strip()
+    normalized = _normalize_case_name(case_name)
+    if normalized != case_name:
+        config[CONFIG_KEY_CASE_NAME] = normalized
+        _write_config(config)
+        case_name = normalized
     root_value = str(config.get(CONFIG_KEY_CASE_ROOT_DIR, "") or "").strip()
     root_dir = Path(root_value) if root_value else None
     if root_dir is not None and not root_dir.exists():
@@ -1180,7 +1217,7 @@ def load_case_context() -> tuple[str, Path | None]:
 
 def save_case_context(case_name: str, root_dir: Path) -> None:
     config = _read_config()
-    config[CONFIG_KEY_CASE_NAME] = case_name
+    config[CONFIG_KEY_CASE_NAME] = _normalize_case_name(case_name)
     config[CONFIG_KEY_CASE_ROOT_DIR] = str(root_dir)
     _write_config(config)
 
@@ -2820,7 +2857,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         save_case_context(case_name, base_dir)
         self.selected_pdfs = []
         save_selected_pdfs([])
-        display_name = case_name.replace("_", " ") if case_name else "case bundle"
+        display_name = _display_case_name(case_name) or "case bundle"
         self.selected_label.set_text(f"Selected: {display_name}")
         self.show_toast(f"Selected: {display_name}")
         self._reset_step_statuses()
@@ -2875,7 +2912,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     def _load_case_context(self) -> None:
         case_name, _root_dir = load_case_context()
         if case_name:
-            display_name = case_name.replace("_", " ") if case_name else case_name
+            display_name = _display_case_name(case_name) or case_name
             self.selected_label.set_text(f"Selected: {display_name}")
         self._update_toc_button()
         self._refresh_step_statuses_from_artifacts()
@@ -5142,15 +5179,24 @@ class RecordPrepApp(Adw.Application):
         super().__init__(application_id=APPLICATION_ID)
 
     def do_activate(self) -> None:
+        _log_startup("do_activate: begin")
         win = self.props.active_window
         if not win:
+            _log_startup("do_activate: creating window")
             win = RecordPrepWindow(self)
+            _log_startup("do_activate: window created")
+        else:
+            _log_startup("do_activate: using existing window")
         win.present()
+        _log_startup("do_activate: present called")
 
 
 def main() -> None:
+    _log_startup("main: begin")
     app = RecordPrepApp()
+    _log_startup("main: app created")
     app.run(None)
+    _log_startup("main: app run returned")
 
 
 if __name__ == "__main__":
