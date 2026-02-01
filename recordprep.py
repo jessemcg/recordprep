@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import datetime
 import os
 import importlib
 import json
 import random
 import re
+import subprocess
 import threading
 import time
 import unicodedata
@@ -26,6 +28,11 @@ from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 import fitz
 import pdftotext
 from pypdf import PdfReader, PdfWriter
+import requests
+from bs4 import BeautifulSoup
+from bs4.element import NavigableString
+from pylatexenc.latex2text import LatexNodes2Text
+from tabulate import tabulate
 
 APPLICATION_ID = "com.mcglaw.RecordPrep"
 APPLICATION_NAME = "Record Prep"
@@ -37,6 +44,15 @@ LLM_MAX_RETRIES = 5
 LLM_RETRY_BASE_SECONDS = 1.0
 LLM_RETRY_MAX_SECONDS = 30.0
 LLM_RETRYABLE_HTTP_CODES = {408, 409, 429, 500, 502, 503, 504}
+MODEL_ID = "LightOnOCR-2-1B-Q8_0.gguf"
+DEFAULT_SERVER_URL = "http://localhost:8000/v1/chat/completions"
+START_SERVER_COMMAND = """\
+cd $HOME/llama.cpp/build/bin
+./llama-server \
+-m $HOME/llama.cpp/models/LightOnOCR-2-1B-Q8_0.gguf \
+--mmproj $HOME/llama.cpp/models/mmproj-LightOnOCR-2-1B-Q8_0.gguf \
+-ngl 999 --port 8000 --flash-attn on
+"""
 
 
 class StopRequested(RuntimeError):
@@ -72,6 +88,7 @@ CONFIG_KEY_CASE_NAME_API_KEY = "case_name_api_key"
 CONFIG_KEY_CASE_NAME_PROMPT = "case_name_prompt"
 CONFIG_KEY_CASE_NAME = "case_name"
 CONFIG_KEY_CASE_ROOT_DIR = "case_root_dir"
+CONFIG_KEY_TEXT_SOURCE = "text_source"
 CONFIG_KEY_ADVANCED_CLASSIFY_API_URL = "advanced_classify_api_url"
 CONFIG_KEY_ADVANCED_CLASSIFY_MODEL_ID = "advanced_classify_model_id"
 CONFIG_KEY_ADVANCED_CLASSIFY_API_KEY = "advanced_classify_api_key"
@@ -105,6 +122,9 @@ CONFIG_KEY_OVERVIEW_PROMPT = "overview_prompt"
 CONFIG_KEY_RAG_VOYAGE_API_KEY = "rag_voyage_api_key"
 CONFIG_KEY_RAG_VOYAGE_MODEL = "rag_voyage_model"
 CONFIG_KEY_SELECTED_PDFS = "selected_pdfs"
+TEXT_SOURCE_EMBEDDED = "embedded"
+TEXT_SOURCE_LOCAL_OCR = "local_ocr"
+DEFAULT_TEXT_SOURCE = TEXT_SOURCE_EMBEDDED
 DEFAULT_CLASSIFIER_PROMPT = (
     "You are labeling a single page of an OCR'd legal transcript. "
     "Return JSON with keys: \"page_type\". "
@@ -1236,6 +1256,22 @@ def save_selected_pdfs(paths: list[Path]) -> None:
     config[CONFIG_KEY_SELECTED_PDFS] = [str(path) for path in paths]
     _write_config(config)
 
+
+def load_text_source_setting() -> str:
+    config = _read_config()
+    raw = str(config.get(CONFIG_KEY_TEXT_SOURCE, "") or "").strip()
+    if raw in {TEXT_SOURCE_EMBEDDED, TEXT_SOURCE_LOCAL_OCR}:
+        return raw
+    return DEFAULT_TEXT_SOURCE
+
+
+def save_text_source_setting(value: str) -> None:
+    config = _read_config()
+    if value not in {TEXT_SOURCE_EMBEDDED, TEXT_SOURCE_LOCAL_OCR}:
+        value = DEFAULT_TEXT_SOURCE
+    config[CONFIG_KEY_TEXT_SOURCE] = value
+    _write_config(config)
+
 def _generate_text_files(pdf_path: Path, text_dir: Path) -> None:
     with pdf_path.open("rb") as handle:
         pdf = pdftotext.PDF(handle, physical=True)
@@ -1253,6 +1289,144 @@ def _generate_image_page_files(pdf_path: Path, image_pages_dir: Path) -> None:
             pix.save(str(image_pages_dir / f"{index + 1:04d}.png"))
     finally:
         doc.close()
+
+
+def _extract_table_rows(table) -> tuple[list[str], list[list[str]]]:
+    headers: list[str] = []
+    rows: list[list[str]] = []
+
+    thead = table.find("thead")
+    if thead:
+        header_cells = thead.find_all("th")
+        headers = [cell.get_text(" ", strip=True) for cell in header_cells]
+
+    tbody = table.find("tbody")
+    tr_elements = (tbody or table).find_all("tr")
+    for row_index, tr in enumerate(tr_elements):
+        cells = tr.find_all(["th", "td"])
+        if not cells:
+            continue
+        cell_text = [cell.get_text(" ", strip=True) for cell in cells]
+        if not headers and row_index == 0 and tr.find_all("th"):
+            headers = cell_text
+            continue
+        rows.append(cell_text)
+
+    return headers, rows
+
+
+def _convert_html_tables(content: str) -> str:
+    soup = BeautifulSoup(content, "html.parser")
+    tables = soup.find_all("table")
+    for table in tables:
+        headers, rows = _extract_table_rows(table)
+        if not rows and not headers:
+            table.replace_with(NavigableString(""))
+            continue
+        table_text = tabulate(rows, headers=headers or (), tablefmt="github")
+        table.replace_with(NavigableString(f"\n{table_text}\n"))
+
+    return soup.get_text(separator="\n\n", strip=True)
+
+
+def _strip_markdown(content: str) -> str:
+    content = re.sub(r"(?m)^[ \t]*!\[[^]]*]\([^)\s]+\)[ \t]*\n?", "", content)
+    content = re.sub(r"(?m)^[ \t]{0,3}#{1,6}\s*", "", content)
+    content = re.sub(r"\*\*(.+?)\*\*", r"\1", content)
+    content = re.sub(r"\*(\S[^*]*?)\*", r"\1", content)
+    return content
+
+
+def _start_server(command: str) -> subprocess.Popen[str]:
+    command = command.strip()
+    if not command:
+        raise RuntimeError("Start server command is empty.")
+    return subprocess.Popen(
+        ["bash", "-lc", command],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+
+def _stop_server(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+
+
+def _ocr_image(image_path: Path, server_url: str) -> str:
+    with image_path.open("rb") as handle:
+        image_base64 = base64.b64encode(handle.read()).decode()
+    response = requests.post(
+        server_url,
+        json={
+            "model": MODEL_ID,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{image_base64}"},
+                        }
+                    ],
+                }
+            ],
+            "max_tokens": 1024,
+            "temperature": 0.2,
+            "top_k": 0,
+            "top_p": 0.9,
+        },
+        timeout=300,
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+
+def _generate_text_files_with_local_ocr(
+    pdf_path: Path,
+    text_dir: Path,
+    image_pages_dir: Path,
+    stop_check: Callable[[], None] | None = None,
+    server_url: str = DEFAULT_SERVER_URL,
+    start_command: str = START_SERVER_COMMAND,
+    sleep_seconds: float = 1.0,
+) -> None:
+    server_process: subprocess.Popen[str] | None = None
+    try:
+        server_process = _start_server(start_command)
+        time.sleep(sleep_seconds)
+
+        if stop_check:
+            stop_check()
+        _generate_image_page_files(pdf_path, image_pages_dir)
+        image_paths = sorted(image_pages_dir.glob("*.png"))
+        if not image_paths:
+            raise RuntimeError("No images generated for OCR.")
+
+        for image_path in image_paths:
+            if stop_check:
+                stop_check()
+            text = _ocr_image(image_path, server_url)
+            target = text_dir / f"{image_path.stem}.txt"
+            target.write_text(text, encoding="utf-8")
+
+        for text_path in sorted(text_dir.glob("*.txt"), key=_natural_sort_key):
+            if stop_check:
+                stop_check()
+            converted = _convert_html_tables(text_path.read_text(encoding="utf-8"))
+            plain_text = LatexNodes2Text().latex_to_text(converted)
+            cleaned = _strip_markdown(plain_text)
+            text_path.write_text(cleaned, encoding="utf-8")
+    finally:
+        if server_process is not None:
+            _stop_server(server_process)
 
 @dataclass
 class ClassifySettingsWidgets:
@@ -1477,6 +1651,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._classify_names_widgets: ClassifyNamesSettingsWidgets | None = None
         self._advanced_classify_widgets: AdvancedClassificationSettingsWidgets | None = None
         self._prompt_row_keys: dict[Gtk.ListBoxRow, str] = {}
+        self._text_source_row: Adw.ComboRow | None = None
+        self._text_source_values: list[str] = []
         self._build_ui()
 
     def trigger_save(self) -> None:
@@ -1538,6 +1714,20 @@ class SettingsWindow(Adw.ApplicationWindow):
         prompt_stack.set_vexpand(True)
         prompt_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
         self._prompt_stack = prompt_stack
+
+        text_source_row = Gtk.ListBoxRow()
+        text_source_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        text_source_box.set_margin_top(8)
+        text_source_box.set_margin_bottom(8)
+        text_source_box.set_margin_start(12)
+        text_source_box.set_margin_end(12)
+        text_source_label = Gtk.Label(label="Create files", xalign=0)
+        text_source_box.append(text_source_label)
+        text_source_row.set_child(text_source_box)
+        prompt_list.append(text_source_row)
+        self._prompt_row_keys[text_source_row] = "text-source"
+        text_source_page = self._build_text_source_page()
+        prompt_stack.add_named(text_source_page, "text-source")
 
         prompt_definitions = [
             ("case-name", "Infer Case Name", load_case_name_settings(), DEFAULT_CASE_NAME_PROMPT),
@@ -1709,6 +1899,55 @@ class SettingsWindow(Adw.ApplicationWindow):
 
         view.set_content(content)
         self.set_content(view)
+
+    def _build_text_source_page(self) -> Gtk.Widget:
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page_box.set_margin_top(12)
+        page_box.set_margin_bottom(12)
+        page_box.set_margin_start(12)
+        page_box.set_margin_end(12)
+        page_box.set_vexpand(True)
+
+        title_label = Gtk.Label(label="Create files", xalign=0)
+        title_label.add_css_class("title-3")
+        page_box.append(title_label)
+
+        info_label = Gtk.Label(
+            label="Choose how text files are generated during Create files.",
+            xalign=0,
+        )
+        info_label.add_css_class("dim-label")
+        page_box.append(info_label)
+
+        group = Adw.PreferencesGroup(title="Text extraction")
+        group.add_css_class("list-stack")
+        page_box.append(group)
+
+        options = [
+            ("Use embedded text", TEXT_SOURCE_EMBEDDED),
+            ("OCR with local model", TEXT_SOURCE_LOCAL_OCR),
+        ]
+        labels = [label for label, _value in options]
+        values = [value for _label, value in options]
+        model = Gtk.StringList.new(labels)
+        row = Adw.ComboRow(title="Text source")
+        row.set_model(model)
+        current = load_text_source_setting()
+        try:
+            row.set_selected(values.index(current))
+        except ValueError:
+            row.set_selected(0)
+        group.add(row)
+
+        self._text_source_row = row
+        self._text_source_values = values
+
+        page = Gtk.ScrolledWindow()
+        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page.set_hexpand(True)
+        page.set_vexpand(True)
+        page.set_child(page_box)
+        return page
 
     def _build_prompt_editor(self, text: str) -> tuple[Gtk.ScrolledWindow, Gtk.TextBuffer]:
         scroller = Gtk.ScrolledWindow()
@@ -2223,6 +2462,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         summarize_widgets = getattr(self, "_summarize_widgets", None)
         overview_widgets = getattr(self, "_overview_widgets", None)
         rag_widgets = getattr(self, "_rag_widgets", None)
+        if self._text_source_row:
+            selected = self._text_source_row.get_selected()
+            value = DEFAULT_TEXT_SOURCE
+            if 0 <= selected < len(self._text_source_values):
+                value = self._text_source_values[selected]
+            save_text_source_setting(value)
         if case_widgets:
             save_case_name_settings(
                 case_widgets.api_url_row.get_text().strip(),
@@ -3092,9 +3337,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 pdf_path = self.selected_pdfs[0]
             self._raise_if_stop_requested()
-            _generate_text_files(pdf_path, text_dir)
-            self._raise_if_stop_requested()
-            _generate_image_page_files(pdf_path, image_pages_dir)
+            text_source = load_text_source_setting()
+            if text_source == TEXT_SOURCE_LOCAL_OCR:
+                _generate_text_files_with_local_ocr(
+                    pdf_path,
+                    text_dir,
+                    image_pages_dir,
+                    stop_check=self._raise_if_stop_requested,
+                )
+            else:
+                _generate_text_files(pdf_path, text_dir)
+                self._raise_if_stop_requested()
+                _generate_image_page_files(pdf_path, image_pages_dir)
         except StopRequested:
             success = None
         except Exception as exc:
