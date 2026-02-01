@@ -69,3 +69,6 @@ case_bundle/
 ## Settings
 Settings are stored in `config.json` next to `recordprep.py` and include API URLs, model IDs,
 keys, and prompts for each LLM-backed step.
+
+## License
+GPL-3.0-or-later. See `LICENSE`.
