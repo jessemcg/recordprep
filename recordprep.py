@@ -23,7 +23,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
+from gi.repository import Adw, Gio, GLib, Gtk, GObject  # type: ignore
 
 import fitz
 import pdftotext
@@ -72,6 +72,8 @@ CONFIG_KEY_CLASSIFIER_API_URL = "classifier_api_url"
 CONFIG_KEY_CLASSIFIER_MODEL_ID = "classifier_model_id"
 CONFIG_KEY_CLASSIFIER_API_KEY = "classifier_api_key"
 CONFIG_KEY_CLASSIFIER_PROMPT = "classifier_prompt"
+CONFIG_KEY_CLASSIFIER_RT_PROMPT = "classifier_rt_prompt"
+CONFIG_KEY_CLASSIFIER_CT_PROMPT = "classifier_ct_prompt"
 CONFIG_KEY_CLASSIFIER_USE_LOCAL = "classifier_use_local"
 CONFIG_KEY_CLASSIFIER_LOCAL_SERVER_URL = "classifier_local_server_url"
 CONFIG_KEY_CLASSIFIER_LOCAL_MODEL_ID = "classifier_local_model_id"
@@ -317,6 +319,60 @@ def _extract_page_number(filename: str) -> int | None:
     return None
 
 
+def _normalize_rt_ct_split_page(value: int | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _normalize_rt_ct_split_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"rt_only", "ct_only", "split"}:
+        return normalized
+    return "split"
+
+
+def _read_rt_ct_split_page(root_dir: Path) -> int | None:
+    manifest = _read_manifest(root_dir)
+    value = manifest.get("rt_ct_split_page")
+    return _normalize_rt_ct_split_page(value)
+
+
+def _read_rt_ct_split_mode(root_dir: Path) -> str:
+    manifest = _read_manifest(root_dir)
+    return _normalize_rt_ct_split_mode(manifest.get("rt_ct_split_mode"))
+
+
+def _count_text_pages(text_dir: Path) -> int:
+    if not text_dir.exists():
+        return 0
+    try:
+        return len(list(text_dir.glob("*.txt")))
+    except OSError:
+        return 0
+
+
+def _resolve_rt_ct_split(root_dir: Path, text_dir: Path) -> tuple[int, int, bool, bool, str]:
+    split_mode = _read_rt_ct_split_mode(root_dir)
+    total_pages = _count_text_pages(text_dir)
+    if split_mode == "rt_only":
+        return max(1, total_pages), total_pages, True, False, split_mode
+    if split_mode == "ct_only":
+        return 0, total_pages, False, True, split_mode
+    split_page = _read_rt_ct_split_page(root_dir)
+    if split_page is None:
+        raise ValueError("Set the RT end page number before running classification.")
+    if total_pages and (split_page < 1 or split_page > total_pages):
+        raise ValueError(f"RT end page must be between 1 and {total_pages}.")
+    need_rt = split_page >= 1
+    need_ct = total_pages > 0 and split_page < total_pages
+    return split_page, total_pages, need_rt, need_ct, split_mode
+
+
 def _is_truthy(value: str) -> bool:
     return value.strip().lower() in {"true", "yes", "y", "1", "relevant", "keep"}
 
@@ -455,6 +511,18 @@ def _load_jsonl_entries(path: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _load_combined_jsonl_entries(paths: list[Path]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for path in paths:
+        entries.extend(_load_jsonl_entries(path))
+    if not entries:
+        return entries
+    entries.sort(
+        key=lambda entry: _natural_sort_key(_extract_entry_value(entry, "file_name", "filename"))
+    )
+    return entries
+
+
 def _load_jsonl_file_names(path: Path) -> set[str]:
     entries = _load_jsonl_entries(path)
     file_names: set[str] = set()
@@ -578,6 +646,23 @@ def _limit_case_name_words(value: str, max_words: int = 8) -> str:
     if len(parts) <= max_words:
         return sanitized
     return "_".join(parts[:max_words])
+
+
+def _looks_like_case_name(value: str) -> bool:
+    sanitized = _sanitize_case_name_value(value)
+    if not sanitized:
+        return False
+    lowered = sanitized.lower().replace("_", " ")
+    if "we are given" in lowered or "we're given" in lowered:
+        return False
+    if "first" in lowered and ("page" in lowered or "pages" in lowered):
+        return False
+    if "given" in lowered and "pages" in lowered:
+        return False
+    if "transcript" in lowered or "ocr" in lowered:
+        return False
+    tokens = re.findall(r"[a-zA-Z]+", lowered)
+    return bool(tokens)
 
 
 def _image_path_for_filename(filename: str, image_dir: Path) -> Path:
@@ -973,6 +1058,8 @@ def _write_manifest(
     root_dir: Path,
     selected_pdfs: list[Path],
     pipeline_info: dict[str, Any] | None = None,
+    rt_ct_split_page: int | None = None,
+    rt_ct_split_mode: str | None = None,
 ) -> None:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     manifest_path = _manifest_path(root_dir)
@@ -1018,11 +1105,22 @@ def _write_manifest(
         if "last_failed_step" in pipeline_info and "last_failed_at" not in pipeline_info:
             pipeline["last_failed_at"] = now
 
+    existing_split = _normalize_rt_ct_split_page(existing.get("rt_ct_split_page"))
+    existing_mode = _normalize_rt_ct_split_mode(existing.get("rt_ct_split_mode"))
+    split_page_value = (
+        existing_split if rt_ct_split_page is None else _normalize_rt_ct_split_page(rt_ct_split_page)
+    )
+    split_mode_value = (
+        existing_mode if rt_ct_split_mode is None else _normalize_rt_ct_split_mode(rt_ct_split_mode)
+    )
+
     payload: dict[str, Any] = {
         "schema_version": 1,
         "created_at": created_at,
         "updated_at": now,
         "root_dir": _root_path(root_dir),
+        "rt_ct_split_page": split_page_value,
+        "rt_ct_split_mode": split_mode_value,
         "input_pdfs": [_relpath(path) for path in selected_pdfs],
         "dirs": {
             "text_pages": _relpath(text_dir),
@@ -1049,19 +1147,33 @@ def _write_manifest(
             "case_overview": _relpath(rag_dir / "case_overview.txt"),
         },
         "classification": {
-            "basic": _relpath(classification_dir / "basic.jsonl"),
-            "basic_corrected": _relpath(classification_dir / "basic_corrected.jsonl"),
-            "basic_corrected_advanced": _relpath(
-                classification_dir / "basic_corrected_advanced.jsonl"
+            "rt_basic": _relpath(classification_dir / "RT_basic.jsonl"),
+            "ct_basic": _relpath(classification_dir / "CT_basic.jsonl"),
+            "rt_basic_corrected": _relpath(classification_dir / "RT_basic_corrected.jsonl"),
+            "ct_basic_corrected": _relpath(classification_dir / "CT_basic_corrected.jsonl"),
+            "rt_basic_corrected_advanced": _relpath(
+                classification_dir / "RT_basic_corrected_advanced.jsonl"
             ),
-            "basic_corrected_advanced_corrected": _relpath(
-                classification_dir / "basic_corrected_advanced_corrected.jsonl"
+            "ct_basic_corrected_advanced": _relpath(
+                classification_dir / "CT_basic_corrected_advanced.jsonl"
             ),
-            "basic_corrected_advanced_corrected_dates": _relpath(
-                classification_dir / "basic_corrected_advanced_corrected_dates.jsonl"
+            "rt_basic_corrected_advanced_corrected": _relpath(
+                classification_dir / "RT_basic_corrected_advanced_corrected.jsonl"
             ),
-            "basic_corrected_advanced_corrected_dates_names": _relpath(
-                classification_dir / "basic_corrected_advanced_corrected_dates_names.jsonl"
+            "ct_basic_corrected_advanced_corrected": _relpath(
+                classification_dir / "CT_basic_corrected_advanced_corrected.jsonl"
+            ),
+            "rt_basic_corrected_advanced_corrected_dates": _relpath(
+                classification_dir / "RT_basic_corrected_advanced_corrected_dates.jsonl"
+            ),
+            "ct_basic_corrected_advanced_corrected_dates": _relpath(
+                classification_dir / "CT_basic_corrected_advanced_corrected_dates.jsonl"
+            ),
+            "rt_basic_corrected_advanced_corrected_dates_names": _relpath(
+                classification_dir / "RT_basic_corrected_advanced_corrected_dates_names.jsonl"
+            ),
+            "ct_basic_corrected_advanced_corrected_dates_names": _relpath(
+                classification_dir / "CT_basic_corrected_advanced_corrected_dates_names.jsonl"
             ),
             "hearings_pages": _relpath(classification_dir / "hearings_pages.jsonl"),
             "minute_order_pages": _relpath(classification_dir / "minute_order_pages.jsonl"),
@@ -1112,6 +1224,12 @@ def load_classifier_settings() -> dict[str, str]:
     model_id = str(config.get(CONFIG_KEY_CLASSIFIER_MODEL_ID, "") or "").strip()
     api_key = str(config.get(CONFIG_KEY_CLASSIFIER_API_KEY, "") or "").strip()
     prompt = str(config.get(CONFIG_KEY_CLASSIFIER_PROMPT, DEFAULT_CLASSIFIER_PROMPT) or "").strip()
+    rt_prompt = str(
+        config.get(CONFIG_KEY_CLASSIFIER_RT_PROMPT, prompt or DEFAULT_CLASSIFIER_PROMPT) or ""
+    ).strip()
+    ct_prompt = str(
+        config.get(CONFIG_KEY_CLASSIFIER_CT_PROMPT, prompt or DEFAULT_CLASSIFIER_PROMPT) or ""
+    ).strip()
     raw_use_local = config.get(CONFIG_KEY_CLASSIFIER_USE_LOCAL, False)
     if isinstance(raw_use_local, str):
         use_local = raw_use_local.strip().lower() in {"1", "true", "yes", "on"}
@@ -1132,6 +1250,8 @@ def load_classifier_settings() -> dict[str, str]:
         "model_id": model_id,
         "api_key": api_key,
         "prompt": prompt or DEFAULT_CLASSIFIER_PROMPT,
+        "rt_prompt": rt_prompt or DEFAULT_CLASSIFIER_PROMPT,
+        "ct_prompt": ct_prompt or DEFAULT_CLASSIFIER_PROMPT,
         "use_local": "true" if use_local else "",
         "local_server_url": local_server_url or DEFAULT_SERVER_URL,
         "local_model_id": local_model_id or MODEL_ID,
@@ -1144,7 +1264,8 @@ def save_classifier_settings(
     api_url: str,
     model_id: str,
     api_key: str,
-    prompt: str,
+    rt_prompt: str,
+    ct_prompt: str,
     use_local: bool,
     local_server_url: str,
     local_model_id: str,
@@ -1155,7 +1276,11 @@ def save_classifier_settings(
     config[CONFIG_KEY_CLASSIFIER_API_URL] = api_url
     config[CONFIG_KEY_CLASSIFIER_MODEL_ID] = model_id
     config[CONFIG_KEY_CLASSIFIER_API_KEY] = api_key
-    config[CONFIG_KEY_CLASSIFIER_PROMPT] = prompt or DEFAULT_CLASSIFIER_PROMPT
+    normalized_rt = rt_prompt or DEFAULT_CLASSIFIER_PROMPT
+    normalized_ct = ct_prompt or DEFAULT_CLASSIFIER_PROMPT
+    config[CONFIG_KEY_CLASSIFIER_PROMPT] = normalized_rt
+    config[CONFIG_KEY_CLASSIFIER_RT_PROMPT] = normalized_rt
+    config[CONFIG_KEY_CLASSIFIER_CT_PROMPT] = normalized_ct
     config[CONFIG_KEY_CLASSIFIER_USE_LOCAL] = bool(use_local)
     config[CONFIG_KEY_CLASSIFIER_LOCAL_SERVER_URL] = local_server_url or DEFAULT_SERVER_URL
     config[CONFIG_KEY_CLASSIFIER_LOCAL_MODEL_ID] = local_model_id or MODEL_ID
@@ -1569,6 +1694,7 @@ class ClassifySettingsWidgets:
     model_row: Adw.EntryRow
     api_key_row: Adw.EntryRow
     prompt_buffer: Gtk.TextBuffer
+    ct_prompt_buffer: Gtk.TextBuffer | None = None
 
 
 @dataclass
@@ -2286,16 +2412,44 @@ class SettingsWindow(Adw.ApplicationWindow):
             local_command_scroller, local_command_buffer = self._build_prompt_editor(
                 settings.get("local_start_command", START_SERVER_COMMAND)
             )
+            local_command_scroller.set_vexpand(False)
+            local_command_scroller.set_size_request(-1, 140)
             page_box.append(local_command_scroller)
 
-        prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        buffer: Gtk.TextBuffer
+        ct_buffer: Gtk.TextBuffer | None = None
+        prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         prompt_section.set_hexpand(True)
         prompt_section.set_vexpand(True)
-        prompt_label = Gtk.Label(label="Prompt", xalign=0)
-        prompt_label.add_css_class("dim-label")
-        prompt_section.append(prompt_label)
-        prompt_scroller, buffer = self._build_prompt_editor(settings.get("prompt") or default_prompt)
-        prompt_section.append(prompt_scroller)
+        if is_classify_basic:
+            rt_label = Gtk.Label(label="Reporter transcript prompt", xalign=0)
+            rt_label.add_css_class("dim-label")
+            prompt_section.append(rt_label)
+            prompt_scroller, buffer = self._build_prompt_editor(
+                settings.get("rt_prompt") or default_prompt
+            )
+            prompt_scroller.set_vexpand(True)
+            prompt_scroller.set_size_request(-1, 260)
+            prompt_section.append(prompt_scroller)
+
+            ct_label = Gtk.Label(label="Clerk transcript prompt", xalign=0)
+            ct_label.add_css_class("dim-label")
+            prompt_section.append(ct_label)
+            ct_scroller, ct_buffer = self._build_prompt_editor(
+                settings.get("ct_prompt") or default_prompt
+            )
+            ct_scroller.set_vexpand(True)
+            ct_scroller.set_size_request(-1, 260)
+            prompt_section.append(ct_scroller)
+        else:
+            prompt_label = Gtk.Label(label="Prompt", xalign=0)
+            prompt_label.add_css_class("dim-label")
+            prompt_section.append(prompt_label)
+            prompt_scroller, buffer = self._build_prompt_editor(
+                settings.get("prompt") or default_prompt
+            )
+            prompt_scroller.set_vexpand(True)
+            prompt_section.append(prompt_scroller)
         page_box.append(prompt_section)
 
         page = Gtk.ScrolledWindow()
@@ -2309,6 +2463,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             model_row=model_row,
             api_key_row=api_key_row,
             prompt_buffer=buffer,
+            ct_prompt_buffer=ct_buffer,
         )
         if is_classify_basic and source_row and local_group and local_server_row and local_model_row:
             if local_api_key_row is None or local_command_buffer is None or local_command_scroller is None:
@@ -2787,11 +2942,18 @@ class SettingsWindow(Adw.ApplicationWindow):
                 self._prompt_text(case_widgets.prompt_buffer).strip(),
             )
         if classify_basic_widgets:
+            rt_prompt = self._prompt_text(classify_basic_widgets.prompt_buffer).strip()
+            ct_prompt = (
+                self._prompt_text(classify_basic_widgets.ct_prompt_buffer).strip()
+                if classify_basic_widgets.ct_prompt_buffer
+                else rt_prompt
+            )
             save_classifier_settings(
                 classify_basic_widgets.api_url_row.get_text().strip(),
                 classify_basic_widgets.model_row.get_text().strip(),
                 classify_basic_widgets.api_key_row.get_text().strip(),
-                self._prompt_text(classify_basic_widgets.prompt_buffer).strip(),
+                rt_prompt,
+                ct_prompt,
                 bool(vision_widgets and vision_widgets.source_row.get_selected() == 1),
                 vision_widgets.local_server_row.get_text().strip() if vision_widgets else "",
                 vision_widgets.local_model_row.get_text().strip() if vision_widgets else "",
@@ -2925,6 +3087,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._pipeline_running = False
         self._stop_event = threading.Event()
         self._step_status_labels: dict[Adw.ActionRow, Gtk.Label] = {}
+        self._rt_ct_split_spin: Gtk.SpinButton | None = None
+        self._rt_ct_split_label: Gtk.Label | None = None
+        self._rt_ct_split_dropdown: Gtk.DropDown | None = None
+        self._rt_ct_split_entry: Gtk.Entry | None = None
+        self._rt_ct_split_pending: int | None = None
+        self._rt_ct_split_mode_pending: str | None = None
+        self._rt_ct_split_updating = False
 
         header_bar = Adw.HeaderBar()
 
@@ -2962,6 +3131,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         content.set_margin_start(24)
         content.set_margin_end(24)
         self.toast_overlay.set_child(content)
+
+        transcript_section = self._build_transcript_split_section()
+        content.append(transcript_section)
 
         self.selected_label = Gtk.Label(label="Selected: None", xalign=0)
         self.selected_label.add_css_class("dim-label")
@@ -3019,7 +3191,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.step_two_row = Adw.ActionRow(
             title="Classification basic",
-            subtitle="Create basic classifications for every page.",
+            subtitle="Create basic classifications for RT and CT pages.",
         )
         self.step_two_row.set_activatable(True)
         self.step_two_row.connect("activated", self.on_step_two_clicked)
@@ -3028,7 +3200,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.step_correct_basic_row = Adw.ActionRow(
             title="Correct basic classification",
-            subtitle="Fix common classification mistakes in basic.jsonl.",
+            subtitle="Fix common classification mistakes in RT/CT basic files.",
         )
         self.step_correct_basic_row.set_activatable(True)
         self.step_correct_basic_row.connect("activated", self.on_step_correct_basic_clicked)
@@ -3146,6 +3318,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._setup_menu(app)
         self._load_selected_pdfs()
         self._load_case_context()
+        self._load_rt_ct_split()
         self._set_status(APPLICATION_NAME, False)
         self._refresh_step_statuses_from_artifacts()
 
@@ -3290,26 +3463,64 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         _set_if_pending(self.step_strip_nonstandard_row, _dir_has_files(text_dir, "*.txt"))
         _set_if_pending(self.step_infer_case_row, (root_dir / "case_name.txt").exists())
-        _set_if_pending(self.step_two_row, (classification_dir / "basic.jsonl").exists())
+        split_page = _read_rt_ct_split_page(root_dir)
+        split_mode = _read_rt_ct_split_mode(root_dir)
+        total_pages = _count_text_pages(text_dir)
+        if split_mode == "rt_only":
+            need_rt = True
+            need_ct = False
+        elif split_mode == "ct_only":
+            need_rt = False
+            need_ct = True
+        else:
+            need_rt = bool(split_page)
+            need_ct = bool(split_page and total_pages and split_page < total_pages)
+
+        def _rt_ct_ready(rt_path: Path, ct_path: Path) -> bool:
+            if need_rt and not rt_path.exists():
+                return False
+            if need_ct and not ct_path.exists():
+                return False
+            return need_rt or need_ct
+
+        _set_if_pending(
+            self.step_two_row,
+            _rt_ct_ready(classification_dir / "RT_basic.jsonl", classification_dir / "CT_basic.jsonl"),
+        )
         _set_if_pending(
             self.step_correct_basic_row,
-            (classification_dir / "basic_corrected.jsonl").exists(),
+            _rt_ct_ready(
+                classification_dir / "RT_basic_corrected.jsonl",
+                classification_dir / "CT_basic_corrected.jsonl",
+            ),
         )
         _set_if_pending(
             self.step_advanced_row,
-            (classification_dir / "basic_corrected_advanced.jsonl").exists(),
+            _rt_ct_ready(
+                classification_dir / "RT_basic_corrected_advanced.jsonl",
+                classification_dir / "CT_basic_corrected_advanced.jsonl",
+            ),
         )
         _set_if_pending(
             self.step_advanced_correct_row,
-            (classification_dir / "basic_corrected_advanced_corrected.jsonl").exists(),
+            _rt_ct_ready(
+                classification_dir / "RT_basic_corrected_advanced_corrected.jsonl",
+                classification_dir / "CT_basic_corrected_advanced_corrected.jsonl",
+            ),
         )
         _set_if_pending(
             self.step_dates_row,
-            (classification_dir / "basic_corrected_advanced_corrected_dates.jsonl").exists(),
+            _rt_ct_ready(
+                classification_dir / "RT_basic_corrected_advanced_corrected_dates.jsonl",
+                classification_dir / "CT_basic_corrected_advanced_corrected_dates.jsonl",
+            ),
         )
         _set_if_pending(
             self.step_names_row,
-            (classification_dir / "basic_corrected_advanced_corrected_dates_names.jsonl").exists(),
+            _rt_ct_ready(
+                classification_dir / "RT_basic_corrected_advanced_corrected_dates_names.jsonl",
+                classification_dir / "CT_basic_corrected_advanced_corrected_dates_names.jsonl",
+            ),
         )
         _set_if_pending(self.step_six_row, (artifacts_dir / "toc.txt").exists())
         _set_if_pending(self.step_correct_toc_row, (artifacts_dir / "toc.txt").exists())
@@ -3365,6 +3576,183 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if not self._pipeline_running:
             self.stop_button.set_sensitive(False)
 
+    def _build_transcript_split_section(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+
+        title = Gtk.Label(label="Transcript split", xalign=0)
+        title.add_css_class("title-3")
+        box.append(title)
+
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+
+        dropdown = Gtk.DropDown.new_from_strings(
+            [
+                "Split RT then CT",
+                "Reporter's transcript only",
+                "Clerk's transcript only",
+            ]
+        )
+        dropdown.set_halign(Gtk.Align.START)
+        dropdown.connect("notify::selected", self._on_rt_ct_split_mode_changed)
+        controls.append(dropdown)
+
+        label = Gtk.Label(label="RT ends at page", xalign=0)
+        controls.append(label)
+
+        entry = Gtk.Entry()
+        entry.set_width_chars(4)
+        entry.set_max_length(5)
+        entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        entry.connect("changed", self._on_rt_ct_split_changed)
+        controls.append(entry)
+
+        self._rt_ct_split_dropdown = dropdown
+        self._rt_ct_split_spin = None
+        self._rt_ct_split_entry = entry
+        self._rt_ct_split_label = None
+
+        box.append(controls)
+        return box
+
+    def _set_rt_ct_split_ui(
+        self, split_page: int | None, total_pages: int | None, split_mode: str
+    ) -> None:
+        entry = self._rt_ct_split_entry
+        dropdown = self._rt_ct_split_dropdown
+        if entry is None or dropdown is None:
+            return
+        self._rt_ct_split_updating = True
+        entry.set_text(str(split_page or ""))
+        dropdown.set_selected(
+            0 if split_mode == "split" else (1 if split_mode == "rt_only" else 2)
+        )
+        self._rt_ct_split_updating = False
+        entry.set_sensitive(split_mode == "split")
+        if split_mode == "split":
+            entry.remove_css_class("dim-label")
+        else:
+            entry.add_css_class("dim-label")
+
+    def _load_rt_ct_split(self) -> None:
+        root_dir = self._resolve_case_root()
+        if root_dir is None or not root_dir.exists():
+            pending_mode = self._rt_ct_split_mode_pending or "split"
+            self._set_rt_ct_split_ui(self._rt_ct_split_pending, None, pending_mode)
+            return
+        split_page = _read_rt_ct_split_page(root_dir)
+        split_mode = _read_rt_ct_split_mode(root_dir)
+        if split_page is None and self._rt_ct_split_pending:
+            split_page = self._rt_ct_split_pending
+            try:
+                _write_manifest(
+                    root_dir,
+                    self.selected_pdfs,
+                    rt_ct_split_page=split_page,
+                    rt_ct_split_mode=split_mode,
+                )
+            except Exception:
+                pass
+            self._rt_ct_split_pending = None
+        if self._rt_ct_split_mode_pending:
+            split_mode = self._rt_ct_split_mode_pending
+            try:
+                _write_manifest(
+                    root_dir,
+                    self.selected_pdfs,
+                    rt_ct_split_page=split_page,
+                    rt_ct_split_mode=split_mode,
+                )
+            except Exception:
+                pass
+            self._rt_ct_split_mode_pending = None
+        total_pages = _count_text_pages(root_dir / "text_pages")
+        self._set_rt_ct_split_ui(split_page, total_pages, split_mode)
+
+    def _on_rt_ct_split_mode_changed(
+        self, dropdown: Gtk.DropDown, _pspec: GObject.ParamSpec
+    ) -> None:
+        if self._rt_ct_split_updating:
+            return
+        if self._pipeline_running:
+            self.show_toast("Stop the pipeline before changing the RT/CT split.")
+            root_dir = self._resolve_case_root()
+            current_mode = (
+                _read_rt_ct_split_mode(root_dir) if root_dir and root_dir.exists() else "split"
+            )
+            current_page = _read_rt_ct_split_page(root_dir) if root_dir and root_dir.exists() else None
+            total_pages = (
+                _count_text_pages(root_dir / "text_pages")
+                if root_dir and root_dir.exists()
+                else None
+            )
+            self._set_rt_ct_split_ui(current_page, total_pages, current_mode)
+            return
+        mode = "split"
+        selected = dropdown.get_selected()
+        if selected == 1:
+            mode = "rt_only"
+        elif selected == 2:
+            mode = "ct_only"
+        root_dir = self._resolve_case_root()
+        if root_dir is None or not root_dir.exists():
+            self._rt_ct_split_mode_pending = mode
+            self._set_rt_ct_split_ui(self._rt_ct_split_pending, None, mode)
+            return
+        try:
+            _write_manifest(
+                root_dir,
+                self.selected_pdfs,
+                rt_ct_split_page=_read_rt_ct_split_page(root_dir),
+                rt_ct_split_mode=mode,
+            )
+        except Exception as exc:
+            self.show_toast(f"Unable to save RT/CT split: {exc}")
+        total_pages = _count_text_pages(root_dir / "text_pages")
+        self._set_rt_ct_split_ui(_read_rt_ct_split_page(root_dir), total_pages, mode)
+        self._refresh_step_statuses_from_artifacts()
+
+    def _on_rt_ct_split_changed(self, entry: Gtk.Entry) -> None:
+        if self._rt_ct_split_updating:
+            return
+        if self._pipeline_running:
+            self.show_toast("Stop the pipeline before changing the RT/CT split.")
+            root_dir = self._resolve_case_root()
+            current = _read_rt_ct_split_page(root_dir) if root_dir and root_dir.exists() else None
+            total_pages = (
+                _count_text_pages(root_dir / "text_pages")
+                if root_dir and root_dir.exists()
+                else None
+            )
+            mode = _read_rt_ct_split_mode(root_dir) if root_dir and root_dir.exists() else "split"
+            self._set_rt_ct_split_ui(current, total_pages, mode)
+            return
+        raw = entry.get_text().strip()
+        split_page = int(raw) if raw.isdigit() else None
+        root_dir = self._resolve_case_root()
+        if root_dir is None or not root_dir.exists():
+            self._rt_ct_split_pending = split_page
+            mode = self._rt_ct_split_mode_pending or "split"
+            return
+        return
+        total_pages = _count_text_pages(root_dir / "text_pages")
+        if total_pages and split_page is not None:
+            if split_page < 1 or split_page > total_pages:
+                self.show_toast(f"RT end page must be between 1 and {total_pages}.")
+                current = _read_rt_ct_split_page(root_dir)
+                mode = _read_rt_ct_split_mode(root_dir)
+                self._set_rt_ct_split_ui(current, total_pages, mode)
+                return
+        try:
+            _write_manifest(
+                root_dir,
+                self.selected_pdfs,
+                rt_ct_split_page=split_page,
+                rt_ct_split_mode=_read_rt_ct_split_mode(root_dir),
+            )
+        except Exception as exc:
+            self.show_toast(f"Unable to save RT/CT split: {exc}")
+        self._refresh_step_statuses_from_artifacts()
+
     def _raise_if_stop_requested(self) -> None:
         if self._stop_event.is_set():
             raise StopRequested()
@@ -3377,10 +3765,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.show_toast("Stop requested.")
 
     def _safe_update_manifest(
-        self, root_dir: Path, pipeline_info: dict[str, Any] | None = None
+        self,
+        root_dir: Path,
+        pipeline_info: dict[str, Any] | None = None,
+        rt_ct_split_page: int | None = None,
     ) -> None:
         try:
-            _write_manifest(root_dir, self.selected_pdfs, pipeline_info=pipeline_info)
+            _write_manifest(
+                root_dir,
+                self.selected_pdfs,
+                pipeline_info=pipeline_info,
+                rt_ct_split_page=rt_ct_split_page,
+            )
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Manifest update failed: {exc}")
 
@@ -3436,6 +3832,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.selected_label.set_text(f"Selected: {display_name}")
         self.show_toast(f"Selected: {display_name}")
         self._reset_step_statuses()
+        self._load_rt_ct_split()
         self._update_toc_button()
         self._refresh_step_statuses_from_artifacts()
 
@@ -3467,6 +3864,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._reset_step_statuses()
         self.selected_label.set_text(f"Selected: {label}")
         self.show_toast(f"Selected: {label}")
+        self._load_rt_ct_split()
         self._update_toc_button()
         self._refresh_step_statuses_from_artifacts()
 
@@ -3481,6 +3879,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self._reset_step_statuses()
         self.selected_label.set_text(f"Selected: {label}")
+        self._load_rt_ct_split()
         self._update_toc_button()
         self._refresh_step_statuses_from_artifacts()
 
@@ -3489,6 +3888,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if case_name:
             display_name = _display_case_name(case_name) or case_name
             self.selected_label.set_text(f"Selected: {display_name}")
+        self._load_rt_ct_split()
         self._update_toc_button()
         self._refresh_step_statuses_from_artifacts()
 
@@ -3689,6 +4089,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.show_toast, f"Create files failed: {exc}")
         else:
             success = True
+            pending_split = self._rt_ct_split_pending
+            pending_mode = self._rt_ct_split_mode_pending
             self._safe_update_manifest(
                 root_dir,
                 {
@@ -3696,7 +4098,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "last_failed_step": None,
                     "last_failed_at": None,
                 },
+                rt_ct_split_page=pending_split,
+                rt_ct_split_mode=pending_mode,
             )
+            if pending_split is not None:
+                self._rt_ct_split_pending = None
+            if pending_mode is not None:
+                self._rt_ct_split_mode_pending = None
+            GLib.idle_add(self._load_rt_ct_split)
             GLib.idle_add(self.show_toast, "Create files complete.")
         finally:
             GLib.idle_add(self.step_one_row.set_sensitive, True)
@@ -3772,9 +4181,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             )
             response_text = self._request_plain_text(settings, combined)
             case_name = _limit_case_name_words(response_text)
-            if not case_name:
+            if not _looks_like_case_name(case_name):
+                case_name = _limit_case_name_words(_infer_case_name_from_text(response_text))
+            if not _looks_like_case_name(case_name):
                 case_name = _limit_case_name_words(_infer_case_name_from_text(combined))
-            if not case_name:
+            if not _looks_like_case_name(case_name):
                 raise ValueError("Unable to infer case name from first three pages.")
             (root_dir / "case_name.txt").write_text(case_name, encoding="utf-8")
             save_case_context(case_name, base_dir)
@@ -4086,28 +4497,60 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     )
             classification_dir = root_dir / "classification"
             classification_dir.mkdir(parents=True, exist_ok=True)
-            classify_basic_path = classification_dir / "basic.jsonl"
-            classify_basic_path.touch(exist_ok=True)
-            done_basic = _load_jsonl_file_names(classify_basic_path)
+            rt_basic_path = classification_dir / "RT_basic.jsonl"
+            ct_basic_path = classification_dir / "CT_basic.jsonl"
             text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)
             if not text_files:
                 raise FileNotFoundError("No text files found to classify.")
-            basic_settings = {
+            split_page, _total_pages, need_rt, need_ct, split_mode = _resolve_rt_ct_split(
+                root_dir, text_dir
+            )
+            if need_rt:
+                rt_basic_path.touch(exist_ok=True)
+            if need_ct:
+                ct_basic_path.touch(exist_ok=True)
+            done_rt = _load_jsonl_file_names(rt_basic_path) if need_rt else set()
+            done_ct = _load_jsonl_file_names(ct_basic_path) if need_ct else set()
+            basic_rt_settings = {
                 "api_url": vision_settings["api_url"],
                 "model_id": vision_settings["model_id"],
                 "api_key": vision_settings["api_key"],
-                "prompt": shared_settings["prompt"],
+                "prompt": shared_settings.get("rt_prompt") or shared_settings.get("prompt"),
             }
-            for text_path in text_files:
+            basic_ct_settings = {
+                "api_url": vision_settings["api_url"],
+                "model_id": vision_settings["model_id"],
+                "api_key": vision_settings["api_key"],
+                "prompt": shared_settings.get("ct_prompt") or shared_settings.get("prompt"),
+            }
+            for index, text_path in enumerate(text_files, start=1):
                 self._raise_if_stop_requested()
-                if text_path.name in done_basic:
-                    continue
+                if split_mode == "rt_only":
+                    is_rt = True
+                elif split_mode == "ct_only":
+                    is_rt = False
+                else:
+                    is_rt = index <= split_page
+                if is_rt:
+                    if not need_rt or text_path.name in done_rt:
+                        continue
+                else:
+                    if not need_ct or text_path.name in done_ct:
+                        continue
                 image_path = _image_path_for_filename(text_path.name, image_dir)
-                entry = self._classify_image(basic_settings, text_path.name, image_path)
-                with classify_basic_path.open("a", encoding="utf-8") as handle:
+                entry = self._classify_image(
+                    basic_rt_settings if is_rt else basic_ct_settings,
+                    text_path.name,
+                    image_path,
+                )
+                target_path = rt_basic_path if is_rt else ct_basic_path
+                with target_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(entry))
                     handle.write("\n")
-                done_basic.add(text_path.name)
+                if is_rt:
+                    done_rt.add(text_path.name)
+                else:
+                    done_ct.add(text_path.name)
         except StopRequested:
             success = None
         except Exception as exc:
@@ -4141,51 +4584,84 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 if self.selected_pdfs:
                     raise ValueError("Selected PDFs must be in the same folder.")
                 raise ValueError("Choose PDF files or select a saved case first.")
+            text_dir = root_dir / "text_pages"
+            if not text_dir.exists():
+                raise FileNotFoundError("Run Create files to generate text files first.")
             classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "basic.jsonl"
-            if not classify_basic_path.exists():
+            _split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
+                root_dir, text_dir
+            )
+            rt_basic_path = classification_dir / "RT_basic.jsonl"
+            ct_basic_path = classification_dir / "CT_basic.jsonl"
+            rt_corrected_path = classification_dir / "RT_basic_corrected.jsonl"
+            ct_corrected_path = classification_dir / "CT_basic_corrected.jsonl"
+
+            if need_rt and not rt_basic_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification basic to generate basic classifications first."
+                    "Run Classification basic to generate RT_basic.jsonl first."
                 )
-            entries = _load_jsonl_entries(classify_basic_path)
-            if not entries:
-                raise FileNotFoundError("No entries found in basic.jsonl.")
-            page_types: list[str] = [
-                _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
-                for entry in entries
-            ]
-            corrected = list(page_types)
-            total = len(corrected)
+            if need_ct and not ct_basic_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification basic to generate CT_basic.jsonl first."
+                )
 
-            def _bridge_page_type(target: str) -> None:
-                source = list(corrected)
-                for index in range(1, total - 1):
-                    self._raise_if_stop_requested()
-                    if source[index - 1] == target and source[index + 1] == target:
-                        if source[index] != target:
-                            corrected[index] = target
-                for index in range(1, total - 2):
-                    self._raise_if_stop_requested()
-                    if source[index - 1] == target and source[index + 2] == target:
-                        if source[index] != target and source[index + 1] != target:
-                            corrected[index] = target
-                            corrected[index + 1] = target
+            def _correct_entries(entries: list[dict[str, Any]], targets: tuple[str, ...]) -> int:
+                if not entries:
+                    return 0
+                page_types = [
+                    _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                    for entry in entries
+                ]
+                corrected = list(page_types)
+                total = len(corrected)
 
-            _bridge_page_type("hearing_page")
-            _bridge_page_type("report_page")
-            _bridge_page_type("minute_order")
+                def _bridge_page_type(target: str) -> None:
+                    source = list(corrected)
+                    for index in range(1, total - 1):
+                        self._raise_if_stop_requested()
+                        if source[index - 1] == target and source[index + 1] == target:
+                            if source[index] != target:
+                                corrected[index] = target
+                    for index in range(1, total - 2):
+                        self._raise_if_stop_requested()
+                        if source[index - 1] == target and source[index + 2] == target:
+                            if source[index] != target and source[index + 1] != target:
+                                corrected[index] = target
+                                corrected[index + 1] = target
+
+                for target in targets:
+                    _bridge_page_type(target)
+
+                corrections = 0
+                for entry, new_type, old_type in zip(entries, corrected, page_types):
+                    if new_type and new_type != old_type:
+                        entry["page_type"] = new_type
+                        corrections += 1
+                return corrections
 
             corrections = 0
-            for entry, new_type, old_type in zip(entries, corrected, page_types):
-                if new_type and new_type != old_type:
-                    entry["page_type"] = new_type
-                    corrections += 1
+            if need_rt:
+                rt_entries = _load_jsonl_entries(rt_basic_path)
+                if not rt_entries:
+                    raise FileNotFoundError("No entries found in RT_basic.jsonl.")
+                corrections += _correct_entries(rt_entries, ("hearing_page",))
+                with rt_corrected_path.open("w", encoding="utf-8") as handle:
+                    for entry in rt_entries:
+                        handle.write(json.dumps(entry))
+                        handle.write("\n")
 
-            corrected_path = classification_dir / "basic_corrected.jsonl"
-            with corrected_path.open("w", encoding="utf-8") as handle:
-                for entry in entries:
-                    handle.write(json.dumps(entry))
-                    handle.write("\n")
+            if need_ct:
+                ct_entries = _load_jsonl_entries(ct_basic_path)
+                if not ct_entries:
+                    raise FileNotFoundError("No entries found in CT_basic.jsonl.")
+                corrections += _correct_entries(
+                    ct_entries,
+                    ("report_page", "minute_order_page", "minute_order", "form_page"),
+                )
+                with ct_corrected_path.open("w", encoding="utf-8") as handle:
+                    for entry in ct_entries:
+                        handle.write(json.dumps(entry))
+                        handle.write("\n")
         except StopRequested:
             success = None
         except Exception as exc:
@@ -4228,11 +4704,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not image_dir.exists():
                 raise FileNotFoundError("Run Create files to generate image files first.")
             classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "basic_corrected.jsonl"
-            if not classify_basic_path.exists():
-                raise FileNotFoundError(
-                    "Run Correct basic classification to generate corrected classifications first."
-                )
             settings = load_advanced_classify_settings()
             vision_settings = _resolve_vision_settings(settings)
             use_local = bool(vision_settings.get("use_local"))
@@ -4254,9 +4725,22 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise ValueError(
                         "Configure vision API URL, model ID, and API key in Settings."
                     )
-            entries = _load_jsonl_entries(classify_basic_path)
-            if not entries:
-                raise FileNotFoundError("No entries found in basic_corrected.jsonl.")
+            _split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
+                root_dir, text_dir
+            )
+            rt_corrected_path = classification_dir / "RT_basic_corrected.jsonl"
+            ct_corrected_path = classification_dir / "CT_basic_corrected.jsonl"
+            rt_advanced_path = classification_dir / "RT_basic_corrected_advanced.jsonl"
+            ct_advanced_path = classification_dir / "CT_basic_corrected_advanced.jsonl"
+            classification_dir.mkdir(parents=True, exist_ok=True)
+            if need_rt and not rt_corrected_path.exists():
+                raise FileNotFoundError(
+                    "Run Correct basic classification to generate RT_basic_corrected.jsonl first."
+                )
+            if need_ct and not ct_corrected_path.exists():
+                raise FileNotFoundError(
+                    "Run Correct basic classification to generate CT_basic_corrected.jsonl first."
+                )
 
             def _maybe_update_page_type(
                 entry: dict[str, Any],
@@ -4285,41 +4769,52 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 return False
 
             updates = 0
-            for entry in entries:
-                self._raise_if_stop_requested()
-                if _maybe_update_page_type(
-                    entry,
-                    ("hearing_page", "hearing"),
-                    "hearing_page_last_page",
-                    settings["hearing_prompt"],
-                    ("is_last_page", "last_page", "last", "is_last"),
-                ):
-                    updates += 1
-                    continue
-                if _maybe_update_page_type(
-                    entry,
-                    ("minute_order_page", "minute_order"),
-                    "minute_order_page_first_page",
-                    settings["minute_prompt"],
-                    ("is_first_page", "first_page", "first", "is_first"),
-                ):
-                    updates += 1
-                    continue
-                if _maybe_update_page_type(
-                    entry,
-                    ("form_page", "form"),
-                    "form_page_first_page",
-                    settings["form_prompt"],
-                    ("is_first_page", "first_page", "first", "is_first"),
-                ):
-                    updates += 1
+            if need_rt:
+                rt_entries = _load_jsonl_entries(rt_corrected_path)
+                if not rt_entries:
+                    raise FileNotFoundError("No entries found in RT_basic_corrected.jsonl.")
+                for entry in rt_entries:
+                    self._raise_if_stop_requested()
+                    if _maybe_update_page_type(
+                        entry,
+                        ("hearing_page", "hearing"),
+                        "hearing_page_last_page",
+                        settings["hearing_prompt"],
+                        ("is_last_page", "last_page", "last", "is_last"),
+                    ):
+                        updates += 1
+                with rt_advanced_path.open("w", encoding="utf-8") as handle:
+                    for entry in rt_entries:
+                        handle.write(json.dumps(entry))
+                        handle.write("\n")
 
-            classification_dir.mkdir(parents=True, exist_ok=True)
-            advanced_path = classification_dir / "basic_corrected_advanced.jsonl"
-            with advanced_path.open("w", encoding="utf-8") as handle:
-                for entry in entries:
-                    handle.write(json.dumps(entry))
-                    handle.write("\n")
+            if need_ct:
+                ct_entries = _load_jsonl_entries(ct_corrected_path)
+                if not ct_entries:
+                    raise FileNotFoundError("No entries found in CT_basic_corrected.jsonl.")
+                for entry in ct_entries:
+                    self._raise_if_stop_requested()
+                    if _maybe_update_page_type(
+                        entry,
+                        ("minute_order_page", "minute_order"),
+                        "minute_order_page_first_page",
+                        settings["minute_prompt"],
+                        ("is_first_page", "first_page", "first", "is_first"),
+                    ):
+                        updates += 1
+                        continue
+                    if _maybe_update_page_type(
+                        entry,
+                        ("form_page", "form"),
+                        "form_page_first_page",
+                        settings["form_prompt"],
+                        ("is_first_page", "first_page", "first", "is_first"),
+                    ):
+                        updates += 1
+                with ct_advanced_path.open("w", encoding="utf-8") as handle:
+                    for entry in ct_entries:
+                        handle.write(json.dumps(entry))
+                        handle.write("\n")
         except StopRequested:
             success = None
         except Exception as exc:
@@ -4356,30 +4851,68 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 if self.selected_pdfs:
                     raise ValueError("Selected PDFs must be in the same folder.")
                 raise ValueError("Choose PDF files or select a saved case first.")
+            text_dir = root_dir / "text_pages"
+            if not text_dir.exists():
+                raise FileNotFoundError("Run Create files to generate text files first.")
             classification_dir = root_dir / "classification"
-            advanced_path = classification_dir / "basic_corrected_advanced.jsonl"
-            if not advanced_path.exists():
+            _split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
+                root_dir, text_dir
+            )
+            rt_advanced_path = classification_dir / "RT_basic_corrected_advanced.jsonl"
+            ct_advanced_path = classification_dir / "CT_basic_corrected_advanced.jsonl"
+            rt_corrected_path = (
+                classification_dir / "RT_basic_corrected_advanced_corrected.jsonl"
+            )
+            ct_corrected_path = (
+                classification_dir / "CT_basic_corrected_advanced_corrected.jsonl"
+            )
+            if need_rt and not rt_advanced_path.exists():
                 raise FileNotFoundError(
-                    "Run Advanced classification to generate advanced corrections first."
+                    "Run Advanced classification to generate RT_basic_corrected_advanced.jsonl first."
                 )
-            entries = _load_jsonl_entries(advanced_path)
-            if not entries:
-                raise FileNotFoundError("No entries found in basic_corrected_advanced.jsonl.")
+            if need_ct and not ct_advanced_path.exists():
+                raise FileNotFoundError(
+                    "Run Advanced classification to generate CT_basic_corrected_advanced.jsonl first."
+                )
+
             corrections = 0
-            for index in range(len(entries) - 1):
-                self._raise_if_stop_requested()
-                current = entries[index]
-                next_entry = entries[index + 1]
-                current_type = _extract_entry_value(current, "page_type", "pagetype").strip().lower()
-                next_type = _extract_entry_value(next_entry, "page_type", "pagetype").strip().lower()
-                if current_type == "hearing_page_last_page" and next_type == "hearing_page_last_page":
-                    current["page_type"] = "hearing_page"
-                    corrections += 1
-            corrected_path = classification_dir / "basic_corrected_advanced_corrected.jsonl"
-            with corrected_path.open("w", encoding="utf-8") as handle:
-                for entry in entries:
-                    handle.write(json.dumps(entry))
-                    handle.write("\n")
+            if need_rt:
+                rt_entries = _load_jsonl_entries(rt_advanced_path)
+                if not rt_entries:
+                    raise FileNotFoundError(
+                        "No entries found in RT_basic_corrected_advanced.jsonl."
+                    )
+                for index in range(len(rt_entries) - 1):
+                    self._raise_if_stop_requested()
+                    current = rt_entries[index]
+                    next_entry = rt_entries[index + 1]
+                    current_type = _extract_entry_value(
+                        current, "page_type", "pagetype"
+                    ).strip().lower()
+                    next_type = _extract_entry_value(
+                        next_entry, "page_type", "pagetype"
+                    ).strip().lower()
+                    if (
+                        current_type == "hearing_page_last_page"
+                        and next_type == "hearing_page_last_page"
+                    ):
+                        current["page_type"] = "hearing_page"
+                        corrections += 1
+                with rt_corrected_path.open("w", encoding="utf-8") as handle:
+                    for entry in rt_entries:
+                        handle.write(json.dumps(entry))
+                        handle.write("\n")
+
+            if need_ct:
+                ct_entries = _load_jsonl_entries(ct_advanced_path)
+                if not ct_entries:
+                    raise FileNotFoundError(
+                        "No entries found in CT_basic_corrected_advanced.jsonl."
+                    )
+                with ct_corrected_path.open("w", encoding="utf-8") as handle:
+                    for entry in ct_entries:
+                        handle.write(json.dumps(entry))
+                        handle.write("\n")
         except StopRequested:
             success = None
         except Exception as exc:
@@ -4422,11 +4955,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not image_dir.exists():
                 raise FileNotFoundError("Run Create files to generate image files first.")
             classification_dir = root_dir / "classification"
-            classify_basic_path = classification_dir / "basic_corrected_advanced_corrected.jsonl"
-            if not classify_basic_path.exists():
-                raise FileNotFoundError(
-                    "Run Correct advanced classification to generate advanced corrections first."
-                )
             settings = load_classify_dates_settings()
             vision_settings = _resolve_vision_settings(settings)
             use_local = bool(vision_settings.get("use_local"))
@@ -4448,25 +4976,51 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise ValueError(
                         "Configure vision API URL, model ID, and API key in Settings."
                     )
-            entries = _load_jsonl_entries(classify_basic_path)
-            if not entries:
-                raise FileNotFoundError("No entries found in basic_corrected_advanced_corrected.jsonl.")
-            hearing_types = {
-                "hearing",
-                "hearing_page",
-            }
+            _split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
+                root_dir, text_dir
+            )
+            rt_corrected_path = (
+                classification_dir / "RT_basic_corrected_advanced_corrected.jsonl"
+            )
+            ct_corrected_path = (
+                classification_dir / "CT_basic_corrected_advanced_corrected.jsonl"
+            )
+            rt_dated_path = (
+                classification_dir / "RT_basic_corrected_advanced_corrected_dates.jsonl"
+            )
+            ct_dated_path = (
+                classification_dir / "CT_basic_corrected_advanced_corrected_dates.jsonl"
+            )
+            if need_rt and not rt_corrected_path.exists():
+                raise FileNotFoundError(
+                    "Run Correct advanced classification to generate RT_basic_corrected_advanced_corrected.jsonl first."
+                )
+            if need_ct and not ct_corrected_path.exists():
+                raise FileNotFoundError(
+                    "Run Correct advanced classification to generate CT_basic_corrected_advanced_corrected.jsonl first."
+                )
+
+            hearing_types = {"hearing", "hearing_page"}
             minute_first_types = {"minute_order_page_first_page", "minute_order_first_page"}
-            previous_hearing = False
             updates = 0
-            for entry in entries:
-                self._raise_if_stop_requested()
-                page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
-                is_hearing_start = page_type == "hearing_page" and not previous_hearing
-                if page_type in hearing_types:
-                    previous_hearing = True
-                else:
-                    previous_hearing = False
-                if is_hearing_start:
+
+            if need_rt:
+                rt_entries = _load_jsonl_entries(rt_corrected_path)
+                if not rt_entries:
+                    raise FileNotFoundError(
+                        "No entries found in RT_basic_corrected_advanced_corrected.jsonl."
+                    )
+                previous_hearing = False
+                for entry in rt_entries:
+                    self._raise_if_stop_requested()
+                    page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                    is_hearing_start = page_type == "hearing_page" and not previous_hearing
+                    if page_type in hearing_types:
+                        previous_hearing = True
+                    else:
+                        previous_hearing = False
+                    if not is_hearing_start:
+                        continue
                     if _extract_entry_value(entry, "date"):
                         continue
                     file_name = _extract_entry_value(entry, "file_name", "filename")
@@ -4487,8 +5041,22 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     if date_value:
                         entry["date"] = date_value
                         updates += 1
-                    continue
-                if page_type in minute_first_types:
+                with rt_dated_path.open("w", encoding="utf-8") as handle:
+                    for entry in rt_entries:
+                        handle.write(json.dumps(entry))
+                        handle.write("\n")
+
+            if need_ct:
+                ct_entries = _load_jsonl_entries(ct_corrected_path)
+                if not ct_entries:
+                    raise FileNotFoundError(
+                        "No entries found in CT_basic_corrected_advanced_corrected.jsonl."
+                    )
+                for entry in ct_entries:
+                    self._raise_if_stop_requested()
+                    page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                    if page_type not in minute_first_types:
+                        continue
                     if _extract_entry_value(entry, "date"):
                         continue
                     file_name = _extract_entry_value(entry, "file_name", "filename")
@@ -4509,12 +5077,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     if date_value:
                         entry["date"] = date_value
                         updates += 1
-
-            dated_path = classification_dir / "basic_corrected_advanced_corrected_dates.jsonl"
-            with dated_path.open("w", encoding="utf-8") as handle:
-                for entry in entries:
-                    handle.write(json.dumps(entry))
-                    handle.write("\n")
+                with ct_dated_path.open("w", encoding="utf-8") as handle:
+                    for entry in ct_entries:
+                        handle.write(json.dumps(entry))
+                        handle.write("\n")
         except StopRequested:
             success = None
         except Exception as exc:
@@ -4556,11 +5122,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not image_dir.exists():
                 raise FileNotFoundError("Run Create files to generate image files first.")
             classification_dir = root_dir / "classification"
-            dates_path = classification_dir / "basic_corrected_advanced_corrected_dates.jsonl"
-            if not dates_path.exists():
-                raise FileNotFoundError(
-                    "Run Classification dates to generate dated classifications first."
-                )
             settings = load_classify_names_settings()
             vision_settings = _resolve_vision_settings(settings)
             use_local = bool(vision_settings.get("use_local"))
@@ -4582,69 +5143,104 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise ValueError(
                         "Configure vision API URL, model ID, and API key in Settings."
                     )
-            entries = _load_jsonl_entries(dates_path)
-            if not entries:
+            split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
+                root_dir, text_dir
+            )
+            rt_dated_path = (
+                classification_dir / "RT_basic_corrected_advanced_corrected_dates.jsonl"
+            )
+            ct_dated_path = (
+                classification_dir / "CT_basic_corrected_advanced_corrected_dates.jsonl"
+            )
+            rt_named_path = (
+                classification_dir / "RT_basic_corrected_advanced_corrected_dates_names.jsonl"
+            )
+            ct_named_path = (
+                classification_dir / "CT_basic_corrected_advanced_corrected_dates_names.jsonl"
+            )
+            if need_rt and not rt_dated_path.exists():
                 raise FileNotFoundError(
-                    "No entries found in basic_corrected_advanced_corrected_dates.jsonl."
+                    "Run Classification dates to generate RT_basic_corrected_advanced_corrected_dates.jsonl first."
+                )
+            if need_ct and not ct_dated_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification dates to generate CT_basic_corrected_advanced_corrected_dates.jsonl first."
                 )
             report_types = {"report", "report_page"}
             form_first_types = {"form_page_first_page", "form_first_page"}
-            previous_report = False
             updates = 0
-            for entry in entries:
-                self._raise_if_stop_requested()
-                page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
-                is_report_start = page_type in report_types and not previous_report
-                previous_report = page_type in report_types
-                if is_report_start:
-                    if _extract_entry_value(entry, "name"):
-                        continue
-                    file_name = _extract_entry_value(entry, "file_name", "filename")
-                    if not file_name:
-                        continue
-                    image_path = _image_path_for_filename(file_name, image_dir)
-                    response = self._classify_image(
-                        {
-                            "api_url": vision_settings["api_url"],
-                            "model_id": vision_settings["model_id"],
-                            "api_key": vision_settings["api_key"],
-                            "prompt": settings["report_prompt"],
-                        },
-                        file_name,
-                        image_path,
-                    )
-                    name_value = _extract_entry_value(response, "name", "report_name")
-                    if name_value:
-                        entry["name"] = name_value
-                        updates += 1
-                    continue
-                if page_type in form_first_types:
-                    if _extract_entry_value(entry, "name"):
-                        continue
-                    file_name = _extract_entry_value(entry, "file_name", "filename")
-                    if not file_name:
-                        continue
-                    image_path = _image_path_for_filename(file_name, image_dir)
-                    response = self._classify_image(
-                        {
-                            "api_url": vision_settings["api_url"],
-                            "model_id": vision_settings["model_id"],
-                            "api_key": vision_settings["api_key"],
-                            "prompt": settings["form_prompt"],
-                        },
-                        file_name,
-                        image_path,
-                    )
-                    name_value = _extract_entry_value(response, "name", "form_name")
-                    if name_value:
-                        entry["name"] = name_value
-                        updates += 1
 
-            named_path = classification_dir / "basic_corrected_advanced_corrected_dates_names.jsonl"
-            with named_path.open("w", encoding="utf-8") as handle:
-                for entry in entries:
-                    handle.write(json.dumps(entry))
-                    handle.write("\n")
+            if need_rt:
+                rt_entries = _load_jsonl_entries(rt_dated_path)
+                if not rt_entries:
+                    raise FileNotFoundError(
+                        "No entries found in RT_basic_corrected_advanced_corrected_dates.jsonl."
+                    )
+                with rt_named_path.open("w", encoding="utf-8") as handle:
+                    for entry in rt_entries:
+                        handle.write(json.dumps(entry))
+                        handle.write("\n")
+
+            if need_ct:
+                ct_entries = _load_jsonl_entries(ct_dated_path)
+                if not ct_entries:
+                    raise FileNotFoundError(
+                        "No entries found in CT_basic_corrected_advanced_corrected_dates.jsonl."
+                    )
+                previous_report = False
+                for entry in ct_entries:
+                    self._raise_if_stop_requested()
+                    page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                    is_report_start = page_type in report_types and not previous_report
+                    previous_report = page_type in report_types
+                    if is_report_start:
+                        if _extract_entry_value(entry, "name"):
+                            continue
+                        file_name = _extract_entry_value(entry, "file_name", "filename")
+                        if not file_name:
+                            continue
+                        image_path = _image_path_for_filename(file_name, image_dir)
+                        response = self._classify_image(
+                            {
+                                "api_url": vision_settings["api_url"],
+                                "model_id": vision_settings["model_id"],
+                                "api_key": vision_settings["api_key"],
+                                "prompt": settings["report_prompt"],
+                            },
+                            file_name,
+                            image_path,
+                        )
+                        name_value = _extract_entry_value(response, "name", "report_name")
+                        if name_value:
+                            entry["name"] = name_value
+                            updates += 1
+                        continue
+                    if page_type in form_first_types:
+                        if _extract_entry_value(entry, "name"):
+                            continue
+                        file_name = _extract_entry_value(entry, "file_name", "filename")
+                        if not file_name:
+                            continue
+                        image_path = _image_path_for_filename(file_name, image_dir)
+                        response = self._classify_image(
+                            {
+                                "api_url": vision_settings["api_url"],
+                                "model_id": vision_settings["model_id"],
+                                "api_key": vision_settings["api_key"],
+                                "prompt": settings["form_prompt"],
+                            },
+                            file_name,
+                            image_path,
+                        )
+                        name_value = _extract_entry_value(response, "name", "form_name")
+                        if name_value:
+                            entry["name"] = name_value
+                            updates += 1
+
+                with ct_named_path.open("w", encoding="utf-8") as handle:
+                    for entry in ct_entries:
+                        handle.write(json.dumps(entry))
+                        handle.write("\n")
         except StopRequested:
             success = None
         except Exception as exc:
@@ -4680,19 +5276,35 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Choose PDF files or select a saved case first.")
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
-            classify_basic_path = (
-                classification_dir / "basic_corrected_advanced_corrected_dates_names.jsonl"
+            text_dir = root_dir / "text_pages"
+            if not text_dir.exists():
+                raise FileNotFoundError("Run Create files to generate text files first.")
+            split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
+                root_dir, text_dir
             )
-            if not classify_basic_path.exists():
+            rt_named_path = (
+                classification_dir / "RT_basic_corrected_advanced_corrected_dates_names.jsonl"
+            )
+            ct_named_path = (
+                classification_dir / "CT_basic_corrected_advanced_corrected_dates_names.jsonl"
+            )
+            if need_rt and not rt_named_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates and names to generate classify JSONL files first."
+                    "Run Classification dates and names to generate RT_basic_corrected_advanced_corrected_dates_names.jsonl first."
+                )
+            if need_ct and not ct_named_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification dates and names to generate CT_basic_corrected_advanced_corrected_dates_names.jsonl first."
                 )
             derived_dir.mkdir(parents=True, exist_ok=True)
-            basic_entries = _load_jsonl_entries(classify_basic_path)
+            paths: list[Path] = []
+            if need_rt:
+                paths.append(rt_named_path)
+            if need_ct:
+                paths.append(ct_named_path)
+            basic_entries = _load_combined_jsonl_entries(paths)
             if not basic_entries:
-                raise FileNotFoundError(
-                    "No entries found in basic_corrected_advanced_corrected_dates_names.jsonl."
-                )
+                raise FileNotFoundError("No entries found in classified JSONL files.")
             date_by_file: dict[str, str] = {}
             for entry in basic_entries:
                 self._raise_if_stop_requested()
@@ -4712,9 +5324,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 name_value = _extract_entry_value(entry, "name", "report_name", "form_name")
                 if not name_value:
                     continue
-                page = _page_label_from_filename(
-                    _extract_entry_value(entry, "file_name", "filename")
-                )
+                file_name = _extract_entry_value(entry, "file_name", "filename")
+                page_number = _extract_page_number(file_name)
+                if page_number is None or page_number <= split_page:
+                    continue
+                page = _page_label_from_filename(file_name)
                 if page_type in form_first_types:
                     form_lines.append(_format_toc_line(name_value, page))
                 elif page_type in report_types:
@@ -4732,11 +5346,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 date_value = _extract_entry_value(entry, "date").strip()
                 if not date_value:
                     continue
+                page_number = _extract_page_number(file_name)
+                if page_number is None:
+                    continue
                 page = _page_label_from_filename(file_name)
                 line = _format_toc_line(date_value, page)
                 if page_type in minute_first_types:
+                    if page_number <= split_page:
+                        continue
                     minute_order_lines.append(line)
                 elif page_type in hearing_first_types:
+                    if page_number > split_page:
+                        continue
                     hearing_lines.append(line)
             toc_lines: list[str] = [
                 "FORMS",
@@ -4855,17 +5476,35 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise ValueError("Choose PDF files or select a saved case first.")
             classification_dir = root_dir / "classification"
             derived_dir = root_dir / "artifacts"
-            classify_basic_path = (
-                classification_dir / "basic_corrected_advanced_corrected_dates_names.jsonl"
+            text_dir = root_dir / "text_pages"
+            if not text_dir.exists():
+                raise FileNotFoundError("Run Create files to generate text files first.")
+            split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
+                root_dir, text_dir
             )
-            if not classify_basic_path.exists():
+            rt_named_path = (
+                classification_dir / "RT_basic_corrected_advanced_corrected_dates_names.jsonl"
+            )
+            ct_named_path = (
+                classification_dir / "CT_basic_corrected_advanced_corrected_dates_names.jsonl"
+            )
+            if need_rt and not rt_named_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates and names to generate classify JSONL files first."
+                    "Run Classification dates and names to generate RT_basic_corrected_advanced_corrected_dates_names.jsonl first."
+                )
+            if need_ct and not ct_named_path.exists():
+                raise FileNotFoundError(
+                    "Run Classification dates and names to generate CT_basic_corrected_advanced_corrected_dates_names.jsonl first."
                 )
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_by_file: dict[str, str] = {}
             report_name_by_file: dict[str, str] = {}
-            payload_entries = _load_jsonl_entries(classify_basic_path)
+            paths: list[Path] = []
+            if need_rt:
+                paths.append(rt_named_path)
+            if need_ct:
+                paths.append(ct_named_path)
+            payload_entries = _load_combined_jsonl_entries(paths)
             for entry in payload_entries:
                 self._raise_if_stop_requested()
                 file_name = _extract_entry_value(entry, "file_name", "filename")
@@ -4893,14 +5532,29 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     continue
                 entries.append((file_name, page_type, page_number))
             if not entries:
-                raise FileNotFoundError(
-                    "No entries found in basic_corrected_advanced_corrected_dates_names.jsonl."
-                )
+                raise FileNotFoundError("No entries found in classified JSONL files.")
             current_report_start: str | None = None
             current_report_end: str | None = None
             report_sequence_relevant = False
             for file_name, page_type, page_number in entries:
                 self._raise_if_stop_requested()
+                if page_number <= split_page:
+                    if current_report_start:
+                        if report_sequence_relevant:
+                            self._append_boundary_entry(
+                                "report",
+                                current_report_start,
+                                current_report_end,
+                                date_by_file,
+                                report_name_by_file,
+                                hearing_boundaries,
+                                report_boundaries,
+                                minutes_boundaries,
+                            )
+                        current_report_start = None
+                        current_report_end = None
+                        report_sequence_relevant = False
+                    continue
                 if page_type not in {"report", "report_page"}:
                     if current_report_start:
                         if report_sequence_relevant:
@@ -4975,6 +5629,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 self._raise_if_stop_requested()
                 file_name, page_type, page_number = entries[index]
                 if page_type in hearing_types or page_type in minute_types:
+                    if page_type in hearing_types and page_number > split_page:
+                        index += 1
+                        continue
+                    if page_type in minute_types and page_number <= split_page:
+                        index += 1
+                        continue
                     expected_types = hearing_types if page_type in hearing_types else minute_types
                     entry_type = "hearing" if page_type in hearing_types else "minute_order"
                     end_file = file_name
@@ -4986,6 +5646,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         if entry_type == "hearing" and last_type == "hearing_page_last_page":
                             break
                         next_file, next_type, next_number = entries[index]
+                        if entry_type == "hearing" and next_number > split_page:
+                            break
+                        if entry_type == "minute_order" and next_number <= split_page:
+                            break
                         if (
                             next_type not in expected_types
                             or next_number != last_number + 1
