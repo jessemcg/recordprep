@@ -1283,9 +1283,18 @@ def _generate_text_files(pdf_path: Path, text_dir: Path) -> None:
 def _generate_image_page_files(pdf_path: Path, image_pages_dir: Path) -> None:
     doc = fitz.open(str(pdf_path))
     try:
+        target_dpi = 200
+        max_dimension_px = 1540
+        base_zoom = target_dpi / 72.0
         for index in range(len(doc)):
             page = doc.load_page(index)
-            pix = page.get_pixmap(dpi=300, colorspace=fitz.csGRAY)
+            page_rect = page.rect
+            width_px = page_rect.width * target_dpi / 72.0
+            height_px = page_rect.height * target_dpi / 72.0
+            max_dim = max(width_px, height_px)
+            scale = min(1.0, max_dimension_px / max_dim) if max_dim else 1.0
+            matrix = fitz.Matrix(base_zoom * scale, base_zoom * scale)
+            pix = page.get_pixmap(matrix=matrix, colorspace=fitz.csGRAY)
             pix.save(str(image_pages_dir / f"{index + 1:04d}.png"))
     finally:
         doc.close()
