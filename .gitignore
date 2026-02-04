@@ -12,6 +12,3 @@ prompts/
 CreateMinOutlineFromTOC.sh
 example_python_GTK4_app/
 example_rag_scripts/
-
-# Test files
-small_sample_record.pdf

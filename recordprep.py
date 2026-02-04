@@ -102,7 +102,6 @@ CONFIG_KEY_ADVANCED_CLASSIFY_FORM_PROMPT = "advanced_classify_form_prompt"
 
 MAX_CASE_NAME_LEN = 120
 MAX_CASE_NAME_DISPLAY_LEN = 80
-MAX_CASE_NAME_WORDS = 8
 CONFIG_KEY_CLASSIFY_FORMS_API_URL = "classify_form_names_api_url"
 CONFIG_KEY_CLASSIFY_FORMS_MODEL_ID = "classify_form_names_model_id"
 CONFIG_KEY_CLASSIFY_FORMS_API_KEY = "classify_form_names_api_key"
@@ -598,9 +597,6 @@ def _normalize_case_name(value: str) -> str:
     sanitized = _sanitize_case_name_value(value)
     if not sanitized:
         return ""
-    tokens = [token for token in sanitized.split("_") if token]
-    if len(tokens) > MAX_CASE_NAME_WORDS:
-        sanitized = "_".join(tokens[:MAX_CASE_NAME_WORDS])
     if len(sanitized) > MAX_CASE_NAME_LEN:
         sanitized = sanitized[:MAX_CASE_NAME_LEN].rstrip("_")
     return sanitized
@@ -2794,7 +2790,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.selected_pdfs: list[Path] = []
         self._settings_window: SettingsWindow | None = None
         self._toc_editor_window: TocEditorWindow | None = None
-        self._edit_toc_action: Gio.SimpleAction | None = None
         self._pipeline_running = False
         self._stop_event = threading.Event()
         self._step_status_labels: dict[Adw.ActionRow, Gtk.Label] = {}
@@ -2837,12 +2832,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         content.set_margin_bottom(24)
         content.set_margin_start(24)
         content.set_margin_end(24)
-
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_hexpand(True)
-        scroller.set_vexpand(True)
-        scroller.set_child(content)
-        self.toast_overlay.set_child(scroller)
+        self.toast_overlay.set_child(content)
 
         transcript_section = self._build_transcript_split_section()
         content.append(transcript_section)
@@ -2867,6 +2857,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.resume_button.set_halign(Gtk.Align.START)
         self.resume_button.connect("clicked", self.on_resume_clicked)
         action_box.append(self.resume_button)
+
+        self.edit_toc_button = Gtk.Button(label="Edit TOC")
+        self.edit_toc_button.set_halign(Gtk.Align.START)
+        self.edit_toc_button.set_sensitive(False)
+        self.edit_toc_button.connect("clicked", self.on_edit_toc_clicked)
+        action_box.append(self.edit_toc_button)
         content.append(action_box)
 
         self.step_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
@@ -3034,15 +3030,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
     def _setup_menu(self, app: Adw.Application) -> None:
         menu = Gio.Menu()
-        menu.append("Edit TOC", "app.edit-toc")
         menu.append("Settings", "app.settings")
         self.menu_button.set_menu_model(menu)
-
-        edit_action = Gio.SimpleAction.new("edit-toc", None)
-        edit_action.set_enabled(False)
-        edit_action.connect("activate", self.on_edit_toc_clicked)
-        app.add_action(edit_action)
-        self._edit_toc_action = edit_action
 
         action = Gio.SimpleAction.new("settings", None)
         action.connect("activate", self.on_settings)
@@ -3075,7 +3064,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self._settings_window.trigger_save()
 
-    def on_edit_toc_clicked(self, *_args: object) -> None:
+    def on_edit_toc_clicked(self, _button: Gtk.Button) -> None:
         toc_path = self._toc_path()
         if not toc_path or not toc_path.exists():
             self.show_toast("Run Build TOC to generate artifacts/toc.txt first.")
@@ -3111,8 +3100,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
     def _update_toc_button(self) -> None:
         toc_path = self._toc_path()
-        if self._edit_toc_action is not None:
-            self._edit_toc_action.set_enabled(bool(toc_path and toc_path.exists()))
+        self.edit_toc_button.set_sensitive(bool(toc_path and toc_path.exists()))
 
     def _set_status(self, message: str, active: bool) -> None:
         self.status_label.set_text(message)
@@ -3302,12 +3290,19 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         title.add_css_class("title-3")
         box.append(title)
 
+        helper = Gtk.Label(
+            label="Choose how to split reporter's and clerk's transcripts for classification.",
+            xalign=0,
+        )
+        helper.add_css_class("dim-label")
+        box.append(helper)
+
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
 
         mode_label = Gtk.Label(label="Mode", xalign=0)
         controls.append(mode_label)
 
-        labels = ["Split: RT → CT", "RT only", "CT only"]
+        labels = ["Split RT then CT", "RT only", "CT only"]
         values = [
             TRANSCRIPT_SPLIT_MODE_SPLIT,
             TRANSCRIPT_SPLIT_MODE_RT_ONLY,
@@ -3318,8 +3313,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         entry = Gtk.Entry()
         entry.set_placeholder_text("RT end page #")
-        entry.set_width_chars(5)
-        entry.set_max_width_chars(5)
+        entry.set_width_chars(8)
         entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
 
         settings = load_transcript_split_settings()
