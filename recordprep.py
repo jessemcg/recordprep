@@ -89,6 +89,9 @@ CONFIG_KEY_CASE_NAME_PROMPT = "case_name_prompt"
 CONFIG_KEY_CASE_NAME = "case_name"
 CONFIG_KEY_CASE_ROOT_DIR = "case_root_dir"
 CONFIG_KEY_TEXT_SOURCE = "text_source"
+CONFIG_KEY_LOCAL_OCR_SERVER_URL = "local_ocr_server_url"
+CONFIG_KEY_LOCAL_OCR_MODEL_ID = "local_ocr_model_id"
+CONFIG_KEY_LOCAL_OCR_START_COMMAND = "local_ocr_start_command"
 CONFIG_KEY_ADVANCED_CLASSIFY_API_URL = "advanced_classify_api_url"
 CONFIG_KEY_ADVANCED_CLASSIFY_MODEL_ID = "advanced_classify_model_id"
 CONFIG_KEY_ADVANCED_CLASSIFY_API_KEY = "advanced_classify_api_key"
@@ -1272,6 +1275,29 @@ def save_text_source_setting(value: str) -> None:
     config[CONFIG_KEY_TEXT_SOURCE] = value
     _write_config(config)
 
+def load_local_ocr_settings() -> dict[str, str]:
+    config = _read_config()
+    server_url = str(
+        config.get(CONFIG_KEY_LOCAL_OCR_SERVER_URL, DEFAULT_SERVER_URL) or ""
+    ).strip()
+    model_id = str(config.get(CONFIG_KEY_LOCAL_OCR_MODEL_ID, MODEL_ID) or "").strip()
+    start_command = str(
+        config.get(CONFIG_KEY_LOCAL_OCR_START_COMMAND, START_SERVER_COMMAND) or ""
+    ).strip()
+    return {
+        "server_url": server_url or DEFAULT_SERVER_URL,
+        "model_id": model_id or MODEL_ID,
+        "start_command": start_command or START_SERVER_COMMAND,
+    }
+
+
+def save_local_ocr_settings(server_url: str, model_id: str, start_command: str) -> None:
+    config = _read_config()
+    config[CONFIG_KEY_LOCAL_OCR_SERVER_URL] = server_url or DEFAULT_SERVER_URL
+    config[CONFIG_KEY_LOCAL_OCR_MODEL_ID] = model_id or MODEL_ID
+    config[CONFIG_KEY_LOCAL_OCR_START_COMMAND] = start_command or START_SERVER_COMMAND
+    _write_config(config)
+
 def _generate_text_files(pdf_path: Path, text_dir: Path) -> None:
     with pdf_path.open("rb") as handle:
         pdf = pdftotext.PDF(handle, physical=True)
@@ -1340,9 +1366,6 @@ def _convert_html_tables(content: str) -> str:
 
 def _strip_markdown(content: str) -> str:
     content = re.sub(r"(?m)^[ \t]*!\[[^]]*]\([^)\s]+\)[ \t]*\n?", "", content)
-    content = re.sub(r"(?m)^[ \t]{0,3}#{1,6}\s*", "", content)
-    content = re.sub(r"\*\*(.+?)\*\*", r"\1", content)
-    content = re.sub(r"\*(\S[^*]*?)\*", r"\1", content)
     return content
 
 
@@ -1369,13 +1392,13 @@ def _stop_server(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=10)
 
 
-def _ocr_image(image_path: Path, server_url: str) -> str:
+def _ocr_image(image_path: Path, server_url: str, model_id: str) -> str:
     with image_path.open("rb") as handle:
         image_base64 = base64.b64encode(handle.read()).decode()
     response = requests.post(
         server_url,
         json={
-            "model": MODEL_ID,
+            "model": model_id,
             "messages": [
                 {
                     "role": "user",
@@ -1405,6 +1428,7 @@ def _generate_text_files_with_local_ocr(
     stop_check: Callable[[], None] | None = None,
     server_url: str = DEFAULT_SERVER_URL,
     start_command: str = START_SERVER_COMMAND,
+    model_id: str = MODEL_ID,
     sleep_seconds: float = 1.0,
 ) -> None:
     server_process: subprocess.Popen[str] | None = None
@@ -1422,7 +1446,7 @@ def _generate_text_files_with_local_ocr(
         for image_path in image_paths:
             if stop_check:
                 stop_check()
-            text = _ocr_image(image_path, server_url)
+            text = _ocr_image(image_path, server_url, model_id)
             target = text_dir / f"{image_path.stem}.txt"
             target.write_text(text, encoding="utf-8")
 
@@ -1455,6 +1479,13 @@ class ClassifyDatesSettingsWidgets:
 class ClassifyNamesSettingsWidgets:
     report_prompt_buffer: Gtk.TextBuffer
     form_prompt_buffer: Gtk.TextBuffer
+
+
+@dataclass
+class LocalOcrSettingsWidgets:
+    server_url_row: Adw.EntryRow
+    model_row: Adw.EntryRow
+    start_command_buffer: Gtk.TextBuffer
 
 
 @dataclass
@@ -1659,6 +1690,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._classify_dates_widgets: ClassifyDatesSettingsWidgets | None = None
         self._classify_names_widgets: ClassifyNamesSettingsWidgets | None = None
         self._advanced_classify_widgets: AdvancedClassificationSettingsWidgets | None = None
+        self._local_ocr_widgets: LocalOcrSettingsWidgets | None = None
         self._prompt_row_keys: dict[Gtk.ListBoxRow, str] = {}
         self._text_source_row: Adw.ComboRow | None = None
         self._text_source_values: list[str] = []
@@ -1737,6 +1769,20 @@ class SettingsWindow(Adw.ApplicationWindow):
         self._prompt_row_keys[text_source_row] = "text-source"
         text_source_page = self._build_text_source_page()
         prompt_stack.add_named(text_source_page, "text-source")
+
+        local_ocr_row = Gtk.ListBoxRow()
+        local_ocr_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        local_ocr_box.set_margin_top(8)
+        local_ocr_box.set_margin_bottom(8)
+        local_ocr_box.set_margin_start(12)
+        local_ocr_box.set_margin_end(12)
+        local_ocr_label = Gtk.Label(label="Local OCR", xalign=0)
+        local_ocr_box.append(local_ocr_label)
+        local_ocr_row.set_child(local_ocr_box)
+        prompt_list.append(local_ocr_row)
+        self._prompt_row_keys[local_ocr_row] = "local-ocr"
+        local_ocr_page = self._build_local_ocr_page(load_local_ocr_settings())
+        prompt_stack.add_named(local_ocr_page, "local-ocr")
 
         prompt_definitions = [
             ("case-name", "Infer Case Name", load_case_name_settings(), DEFAULT_CASE_NAME_PROMPT),
@@ -1978,6 +2024,64 @@ class SettingsWindow(Adw.ApplicationWindow):
         prompt_view.set_right_margin(12)
         scroller.set_child(prompt_view)
         return scroller, buffer
+
+    def _build_local_ocr_page(self, settings: dict[str, str]) -> Gtk.Widget:
+        page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page_box.set_margin_top(12)
+        page_box.set_margin_bottom(12)
+        page_box.set_margin_start(12)
+        page_box.set_margin_end(12)
+        page_box.set_vexpand(True)
+
+        title_label = Gtk.Label(label="Local OCR", xalign=0)
+        title_label.add_css_class("title-3")
+        page_box.append(title_label)
+
+        info_label = Gtk.Label(
+            label="Configure the local OCR server and model used for Create files.",
+            xalign=0,
+        )
+        info_label.add_css_class("dim-label")
+        page_box.append(info_label)
+
+        server_group = Adw.PreferencesGroup(title="Server")
+        server_group.add_css_class("list-stack")
+        server_group.set_hexpand(True)
+        page_box.append(server_group)
+
+        server_url_row = Adw.EntryRow(title="Server URL")
+        server_url_row.set_text(settings.get("server_url", DEFAULT_SERVER_URL))
+        server_group.add(server_url_row)
+
+        model_row = Adw.EntryRow(title="Model ID")
+        model_row.set_text(settings.get("model_id", MODEL_ID))
+        server_group.add(model_row)
+
+        command_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        command_section.set_hexpand(True)
+        command_section.set_vexpand(True)
+
+        command_label = Gtk.Label(label="Start server command", xalign=0)
+        command_label.add_css_class("dim-label")
+        command_section.append(command_label)
+        command_scroller, command_buffer = self._build_prompt_editor(
+            settings.get("start_command", START_SERVER_COMMAND)
+        )
+        command_section.append(command_scroller)
+        page_box.append(command_section)
+
+        page = Gtk.ScrolledWindow()
+        page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page.set_hexpand(True)
+        page.set_vexpand(True)
+        page.set_child(page_box)
+
+        self._local_ocr_widgets = LocalOcrSettingsWidgets(
+            server_url_row=server_url_row,
+            model_row=model_row,
+            start_command_buffer=command_buffer,
+        )
+        return page
 
     def _build_prompt_page(
         self,
@@ -2467,6 +2571,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         advanced_classify_widgets = self._advanced_classify_widgets
         classify_dates_widgets = self._classify_dates_widgets
         classify_names_widgets = self._classify_names_widgets
+        local_ocr_widgets = self._local_ocr_widgets
         optimize_widgets = getattr(self, "_optimize_widgets", None)
         summarize_widgets = getattr(self, "_summarize_widgets", None)
         overview_widgets = getattr(self, "_overview_widgets", None)
@@ -2506,6 +2611,12 @@ class SettingsWindow(Adw.ApplicationWindow):
             save_classify_names_settings(
                 self._prompt_text(classify_names_widgets.report_prompt_buffer).strip(),
                 self._prompt_text(classify_names_widgets.form_prompt_buffer).strip(),
+            )
+        if local_ocr_widgets:
+            save_local_ocr_settings(
+                local_ocr_widgets.server_url_row.get_text().strip(),
+                local_ocr_widgets.model_row.get_text().strip(),
+                self._prompt_text(local_ocr_widgets.start_command_buffer).strip(),
             )
         if optimize_widgets:
             save_optimize_settings(
@@ -2669,11 +2780,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.resume_button.connect("clicked", self.on_resume_clicked)
         action_box.append(self.resume_button)
 
-        self.edit_toc_button = Gtk.Button(label="Edit TOC")
-        self.edit_toc_button.set_halign(Gtk.Align.START)
-        self.edit_toc_button.set_sensitive(False)
-        self.edit_toc_button.connect("clicked", self.on_edit_toc_clicked)
-        action_box.append(self.edit_toc_button)
         content.append(action_box)
 
         self.step_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
@@ -2841,8 +2947,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
     def _setup_menu(self, app: Adw.Application) -> None:
         menu = Gio.Menu()
+        menu.append("Edit TOC", "app.edit-toc")
         menu.append("Settings", "app.settings")
         self.menu_button.set_menu_model(menu)
+
+        edit_toc_action = app.lookup_action("edit-toc")
+        if edit_toc_action is None:
+            edit_toc_action = Gio.SimpleAction.new("edit-toc", None)
+            edit_toc_action.connect("activate", self.on_edit_toc_clicked)
+            app.add_action(edit_toc_action)
+        edit_toc_action.set_enabled(False)
+        self._edit_toc_action = edit_toc_action
 
         action = Gio.SimpleAction.new("settings", None)
         action.connect("activate", self.on_settings)
@@ -2875,7 +2990,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             return
         self._settings_window.trigger_save()
 
-    def on_edit_toc_clicked(self, _button: Gtk.Button) -> None:
+    def on_edit_toc_clicked(self, *_args: object) -> None:
         toc_path = self._toc_path()
         if not toc_path or not toc_path.exists():
             self.show_toast("Run Build TOC to generate artifacts/toc.txt first.")
@@ -2911,7 +3026,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
     def _update_toc_button(self) -> None:
         toc_path = self._toc_path()
-        self.edit_toc_button.set_sensitive(bool(toc_path and toc_path.exists()))
+        enabled = bool(toc_path and toc_path.exists())
+        if hasattr(self, "_edit_toc_action") and self._edit_toc_action:
+            self._edit_toc_action.set_enabled(enabled)
 
     def _set_status(self, message: str, active: bool) -> None:
         self.status_label.set_text(message)
@@ -3348,11 +3465,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self._raise_if_stop_requested()
             text_source = load_text_source_setting()
             if text_source == TEXT_SOURCE_LOCAL_OCR:
+                ocr_settings = load_local_ocr_settings()
                 _generate_text_files_with_local_ocr(
                     pdf_path,
                     text_dir,
                     image_pages_dir,
                     stop_check=self._raise_if_stop_requested,
+                    server_url=ocr_settings["server_url"],
+                    start_command=ocr_settings["start_command"],
+                    model_id=ocr_settings["model_id"],
                 )
             else:
                 _generate_text_files(pdf_path, text_dir)
