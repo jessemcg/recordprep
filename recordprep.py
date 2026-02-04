@@ -72,6 +72,11 @@ CONFIG_KEY_CLASSIFIER_API_URL = "classifier_api_url"
 CONFIG_KEY_CLASSIFIER_MODEL_ID = "classifier_model_id"
 CONFIG_KEY_CLASSIFIER_API_KEY = "classifier_api_key"
 CONFIG_KEY_CLASSIFIER_PROMPT = "classifier_prompt"
+CONFIG_KEY_CLASSIFIER_USE_LOCAL = "classifier_use_local"
+CONFIG_KEY_CLASSIFIER_LOCAL_SERVER_URL = "classifier_local_server_url"
+CONFIG_KEY_CLASSIFIER_LOCAL_MODEL_ID = "classifier_local_model_id"
+CONFIG_KEY_CLASSIFIER_LOCAL_API_KEY = "classifier_local_api_key"
+CONFIG_KEY_CLASSIFIER_LOCAL_START_COMMAND = "classifier_local_start_command"
 CONFIG_KEY_CLASSIFY_DATES_API_URL = "classify_dates_api_url"
 CONFIG_KEY_CLASSIFY_DATES_MODEL_ID = "classify_dates_model_id"
 CONFIG_KEY_CLASSIFY_DATES_API_KEY = "classify_dates_api_key"
@@ -563,6 +568,51 @@ def _sanitize_case_name_value(value: str) -> str:
     cleaned = re.sub(r"\s+", "_", trimmed)
     cleaned = re.sub(r"_+", "_", cleaned)
     return cleaned.strip("_")
+
+
+def _limit_case_name_words(value: str, max_words: int = 8) -> str:
+    sanitized = _sanitize_case_name_value(value)
+    if not sanitized:
+        return ""
+    parts = [part for part in sanitized.split("_") if part]
+    if len(parts) <= max_words:
+        return sanitized
+    return "_".join(parts[:max_words])
+
+
+def _image_path_for_filename(filename: str, image_dir: Path) -> Path:
+    if not filename:
+        raise FileNotFoundError("Missing filename for image lookup.")
+    image_path = image_dir / f"{Path(filename).stem}.png"
+    if not image_path.exists():
+        raise FileNotFoundError(f"Missing image file {image_path.name} for classification.")
+    return image_path
+
+
+def _resolve_vision_settings(settings: dict[str, str]) -> dict[str, str]:
+    raw_use_local = settings.get("use_local", "")
+    use_local = False
+    if isinstance(raw_use_local, str):
+        use_local = raw_use_local.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        use_local = bool(raw_use_local)
+    if use_local:
+        return {
+            "api_url": settings.get("local_server_url", "").strip(),
+            "model_id": settings.get("local_model_id", "").strip(),
+            "api_key": settings.get("local_api_key", "").strip(),
+            "prompt": settings.get("prompt", "").strip(),
+            "start_command": settings.get("local_start_command", "").strip(),
+            "use_local": "true",
+        }
+    return {
+        "api_url": settings.get("api_url", "").strip(),
+        "model_id": settings.get("model_id", "").strip(),
+        "api_key": settings.get("api_key", "").strip(),
+        "prompt": settings.get("prompt", "").strip(),
+        "start_command": "",
+        "use_local": "",
+    }
 
 
 def _normalize_case_name(value: str) -> str:
@@ -1062,20 +1112,57 @@ def load_classifier_settings() -> dict[str, str]:
     model_id = str(config.get(CONFIG_KEY_CLASSIFIER_MODEL_ID, "") or "").strip()
     api_key = str(config.get(CONFIG_KEY_CLASSIFIER_API_KEY, "") or "").strip()
     prompt = str(config.get(CONFIG_KEY_CLASSIFIER_PROMPT, DEFAULT_CLASSIFIER_PROMPT) or "").strip()
+    raw_use_local = config.get(CONFIG_KEY_CLASSIFIER_USE_LOCAL, False)
+    if isinstance(raw_use_local, str):
+        use_local = raw_use_local.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        use_local = bool(raw_use_local)
+    local_server_url = str(
+        config.get(CONFIG_KEY_CLASSIFIER_LOCAL_SERVER_URL, DEFAULT_SERVER_URL) or ""
+    ).strip()
+    local_model_id = str(
+        config.get(CONFIG_KEY_CLASSIFIER_LOCAL_MODEL_ID, MODEL_ID) or ""
+    ).strip()
+    local_api_key = str(config.get(CONFIG_KEY_CLASSIFIER_LOCAL_API_KEY, "") or "").strip()
+    local_start_command = str(
+        config.get(CONFIG_KEY_CLASSIFIER_LOCAL_START_COMMAND, START_SERVER_COMMAND) or ""
+    ).strip()
     return {
         "api_url": api_url,
         "model_id": model_id,
         "api_key": api_key,
         "prompt": prompt or DEFAULT_CLASSIFIER_PROMPT,
+        "use_local": "true" if use_local else "",
+        "local_server_url": local_server_url or DEFAULT_SERVER_URL,
+        "local_model_id": local_model_id or MODEL_ID,
+        "local_api_key": local_api_key,
+        "local_start_command": local_start_command or START_SERVER_COMMAND,
     }
 
 
-def save_classifier_settings(api_url: str, model_id: str, api_key: str, prompt: str) -> None:
+def save_classifier_settings(
+    api_url: str,
+    model_id: str,
+    api_key: str,
+    prompt: str,
+    use_local: bool,
+    local_server_url: str,
+    local_model_id: str,
+    local_api_key: str,
+    local_start_command: str,
+) -> None:
     config = _read_config()
     config[CONFIG_KEY_CLASSIFIER_API_URL] = api_url
     config[CONFIG_KEY_CLASSIFIER_MODEL_ID] = model_id
     config[CONFIG_KEY_CLASSIFIER_API_KEY] = api_key
     config[CONFIG_KEY_CLASSIFIER_PROMPT] = prompt or DEFAULT_CLASSIFIER_PROMPT
+    config[CONFIG_KEY_CLASSIFIER_USE_LOCAL] = bool(use_local)
+    config[CONFIG_KEY_CLASSIFIER_LOCAL_SERVER_URL] = local_server_url or DEFAULT_SERVER_URL
+    config[CONFIG_KEY_CLASSIFIER_LOCAL_MODEL_ID] = local_model_id or MODEL_ID
+    config[CONFIG_KEY_CLASSIFIER_LOCAL_API_KEY] = local_api_key
+    config[CONFIG_KEY_CLASSIFIER_LOCAL_START_COMMAND] = (
+        local_start_command or START_SERVER_COMMAND
+    )
     _write_config(config)
 
 
@@ -1105,6 +1192,11 @@ def load_advanced_classify_settings() -> dict[str, str]:
         "hearing_prompt": hearing_prompt or DEFAULT_ADVANCED_HEARING_PROMPT,
         "minute_prompt": minute_prompt or DEFAULT_ADVANCED_MINUTE_PROMPT,
         "form_prompt": form_prompt or DEFAULT_ADVANCED_FORM_PROMPT,
+        "use_local": shared.get("use_local", ""),
+        "local_server_url": shared.get("local_server_url", ""),
+        "local_model_id": shared.get("local_model_id", ""),
+        "local_api_key": shared.get("local_api_key", ""),
+        "local_start_command": shared.get("local_start_command", ""),
     }
 
 
@@ -1147,6 +1239,11 @@ def load_classify_dates_settings() -> dict[str, str]:
         "api_key": api_key,
         "hearing_prompt": hearing_prompt or DEFAULT_CLASSIFY_HEARING_DATES_PROMPT,
         "minute_prompt": minute_prompt or DEFAULT_CLASSIFY_MINUTE_DATES_PROMPT,
+        "use_local": shared.get("use_local", ""),
+        "local_server_url": shared.get("local_server_url", ""),
+        "local_model_id": shared.get("local_model_id", ""),
+        "local_api_key": shared.get("local_api_key", ""),
+        "local_start_command": shared.get("local_start_command", ""),
     }
 
 
@@ -1185,6 +1282,11 @@ def load_classify_names_settings() -> dict[str, str]:
         "api_key": api_key,
         "report_prompt": report_prompt or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT,
         "form_prompt": form_prompt or DEFAULT_CLASSIFY_FORM_NAMES_PROMPT,
+        "use_local": shared.get("use_local", ""),
+        "local_server_url": shared.get("local_server_url", ""),
+        "local_model_id": shared.get("local_model_id", ""),
+        "local_api_key": shared.get("local_api_key", ""),
+        "local_start_command": shared.get("local_start_command", ""),
     }
 
 
@@ -1470,6 +1572,18 @@ class ClassifySettingsWidgets:
 
 
 @dataclass
+class VisionClassifierSettingsWidgets:
+    source_row: Adw.ComboRow
+    local_server_row: Adw.EntryRow
+    local_model_row: Adw.EntryRow
+    local_api_key_row: Adw.EntryRow
+    local_command_buffer: Gtk.TextBuffer
+    local_group: Adw.PreferencesGroup
+    local_command_scroller: Gtk.ScrolledWindow
+    remote_group: Adw.PreferencesGroup
+
+
+@dataclass
 class ClassifyDatesSettingsWidgets:
     hearing_prompt_buffer: Gtk.TextBuffer
     minute_prompt_buffer: Gtk.TextBuffer
@@ -1687,6 +1801,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.set_resizable(True)
         self._on_saved = on_saved
         self._prompt_editors: dict[str, ClassifySettingsWidgets] = {}
+        self._vision_classifier_widgets: VisionClassifierSettingsWidgets | None = None
         self._classify_dates_widgets: ClassifyDatesSettingsWidgets | None = None
         self._classify_names_widgets: ClassifyNamesSettingsWidgets | None = None
         self._advanced_classify_widgets: AdvancedClassificationSettingsWidgets | None = None
@@ -2101,6 +2216,34 @@ class SettingsWindow(Adw.ApplicationWindow):
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
+        is_classify_basic = key == "classify-basic"
+        source_row: Adw.ComboRow | None = None
+        local_group: Adw.PreferencesGroup | None = None
+        local_server_row: Adw.EntryRow | None = None
+        local_model_row: Adw.EntryRow | None = None
+        local_api_key_row: Adw.EntryRow | None = None
+        local_command_buffer: Gtk.TextBuffer | None = None
+        local_command_scroller: Gtk.ScrolledWindow | None = None
+
+        if is_classify_basic:
+            info_label = Gtk.Label(
+                label="Requires a vision-capable model. Choose a vision model ID.",
+                xalign=0,
+            )
+            info_label.add_css_class("dim-label")
+            page_box.append(info_label)
+
+            source_group = Adw.PreferencesGroup(title="Vision model source")
+            source_group.add_css_class("list-stack")
+            source_group.set_hexpand(True)
+            page_box.append(source_group)
+
+            source_row = Adw.ComboRow(title="Classification source")
+            source_model = Gtk.StringList.new(["Remote API", "Local llama.cpp"])
+            source_row.set_model(source_model)
+            source_row.set_selected(1 if settings.get("use_local") else 0)
+            source_group.add(source_row)
+
         credentials_group = Adw.PreferencesGroup(title="Credentials")
         credentials_group.add_css_class("list-stack")
         credentials_group.set_hexpand(True)
@@ -2110,13 +2253,40 @@ class SettingsWindow(Adw.ApplicationWindow):
         api_url_row.set_text(settings.get("api_url", ""))
         credentials_group.add(api_url_row)
 
-        model_row = Adw.EntryRow(title="Model ID (optional)")
+        model_title = "Vision Model ID" if is_classify_basic else "Model ID (optional)"
+        model_row = Adw.EntryRow(title=model_title)
         model_row.set_text(settings.get("model_id", ""))
         credentials_group.add(model_row)
 
         api_key_row = self._build_password_row("API Key")
         api_key_row.set_text(settings.get("api_key", ""))
         credentials_group.add(api_key_row)
+
+        if is_classify_basic:
+            local_group = Adw.PreferencesGroup(title="Local llama.cpp")
+            local_group.add_css_class("list-stack")
+            local_group.set_hexpand(True)
+            page_box.append(local_group)
+
+            local_server_row = Adw.EntryRow(title="Server URL")
+            local_server_row.set_text(settings.get("local_server_url", DEFAULT_SERVER_URL))
+            local_group.add(local_server_row)
+
+            local_model_row = Adw.EntryRow(title="Vision Model ID")
+            local_model_row.set_text(settings.get("local_model_id", MODEL_ID))
+            local_group.add(local_model_row)
+
+            local_api_key_row = self._build_password_row("API Key (optional)")
+            local_api_key_row.set_text(settings.get("local_api_key", ""))
+            local_group.add(local_api_key_row)
+
+            local_command_label = Gtk.Label(label="Start server command", xalign=0)
+            local_command_label.add_css_class("dim-label")
+            page_box.append(local_command_label)
+            local_command_scroller, local_command_buffer = self._build_prompt_editor(
+                settings.get("local_start_command", START_SERVER_COMMAND)
+            )
+            page_box.append(local_command_scroller)
 
         prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         prompt_section.set_hexpand(True)
@@ -2140,6 +2310,29 @@ class SettingsWindow(Adw.ApplicationWindow):
             api_key_row=api_key_row,
             prompt_buffer=buffer,
         )
+        if is_classify_basic and source_row and local_group and local_server_row and local_model_row:
+            if local_api_key_row is None or local_command_buffer is None or local_command_scroller is None:
+                raise RuntimeError("Local vision settings widgets missing.")
+
+            def _update_source_visibility(*_args: object) -> None:
+                use_local = source_row.get_selected() == 1
+                credentials_group.set_sensitive(not use_local)
+                local_group.set_sensitive(use_local)
+                local_command_scroller.set_sensitive(use_local)
+
+            source_row.connect("notify::selected", _update_source_visibility)
+            _update_source_visibility()
+
+            self._vision_classifier_widgets = VisionClassifierSettingsWidgets(
+                source_row=source_row,
+                local_server_row=local_server_row,
+                local_model_row=local_model_row,
+                local_api_key_row=local_api_key_row,
+                local_command_buffer=local_command_buffer,
+                local_group=local_group,
+                local_command_scroller=local_command_scroller,
+                remote_group=credentials_group,
+            )
         return page
 
     def _build_advanced_classify_prompt_page(self) -> Gtk.Widget:
@@ -2156,7 +2349,10 @@ class SettingsWindow(Adw.ApplicationWindow):
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
-        info_label = Gtk.Label(label="Uses Classification basic credentials.", xalign=0)
+        info_label = Gtk.Label(
+            label="Uses Classification basic vision model credentials.",
+            xalign=0,
+        )
         info_label.add_css_class("dim-label")
         page_box.append(info_label)
 
@@ -2568,6 +2764,7 @@ class SettingsWindow(Adw.ApplicationWindow):
     def _save_settings(self) -> None:
         case_widgets = self._prompt_editors.get("case-name")
         classify_basic_widgets = self._prompt_editors.get("classify-basic")
+        vision_widgets = self._vision_classifier_widgets
         advanced_classify_widgets = self._advanced_classify_widgets
         classify_dates_widgets = self._classify_dates_widgets
         classify_names_widgets = self._classify_names_widgets
@@ -2595,6 +2792,13 @@ class SettingsWindow(Adw.ApplicationWindow):
                 classify_basic_widgets.model_row.get_text().strip(),
                 classify_basic_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(classify_basic_widgets.prompt_buffer).strip(),
+                bool(vision_widgets and vision_widgets.source_row.get_selected() == 1),
+                vision_widgets.local_server_row.get_text().strip() if vision_widgets else "",
+                vision_widgets.local_model_row.get_text().strip() if vision_widgets else "",
+                vision_widgets.local_api_key_row.get_text().strip() if vision_widgets else "",
+                self._prompt_text(vision_widgets.local_command_buffer).strip()
+                if vision_widgets
+                else "",
             )
         if advanced_classify_widgets:
             save_advanced_classify_settings(
@@ -3567,9 +3771,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 path.read_text(encoding="utf-8", errors="ignore") for path in text_files
             )
             response_text = self._request_plain_text(settings, combined)
-            case_name = _sanitize_case_name_value(response_text)
+            case_name = _limit_case_name_words(response_text)
             if not case_name:
-                case_name = _sanitize_case_name_value(_infer_case_name_from_text(combined))
+                case_name = _limit_case_name_words(_infer_case_name_from_text(combined))
             if not case_name:
                 raise ValueError("Unable to infer case name from first three pages.")
             (root_dir / "case_name.txt").write_text(case_name, encoding="utf-8")
@@ -3845,6 +4049,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
     def _run_step_two(self) -> bool:
         success: bool | None = False
+        server_process: subprocess.Popen[str] | None = None
         try:
             self._raise_if_stop_requested()
             root_dir = self._resolve_case_root()
@@ -3853,15 +4058,32 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise ValueError("Selected PDFs must be in the same folder.")
                 raise ValueError("Choose PDF files or select a saved case first.")
             text_dir = root_dir / "text_pages"
+            image_dir = root_dir / "image_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
+            if not image_dir.exists():
+                raise FileNotFoundError("Run Create files to generate image files first.")
             shared_settings = load_classifier_settings()
-            if (
-                not shared_settings["api_url"]
-                or not shared_settings["model_id"]
-                or not shared_settings["api_key"]
-            ):
-                raise ValueError("Configure classify API URL, model ID, and API key in Settings.")
+            vision_settings = _resolve_vision_settings(shared_settings)
+            use_local = bool(vision_settings.get("use_local"))
+            if use_local:
+                if not vision_settings["api_url"] or not vision_settings["model_id"]:
+                    raise ValueError(
+                        "Configure local vision server URL and model ID in Settings."
+                    )
+                if not vision_settings["start_command"]:
+                    raise ValueError("Configure local vision start command in Settings.")
+                server_process = _start_server(vision_settings["start_command"])
+                time.sleep(1.0)
+            else:
+                if (
+                    not vision_settings["api_url"]
+                    or not vision_settings["model_id"]
+                    or not vision_settings["api_key"]
+                ):
+                    raise ValueError(
+                        "Configure vision API URL, model ID, and API key in Settings."
+                    )
             classification_dir = root_dir / "classification"
             classification_dir.mkdir(parents=True, exist_ok=True)
             classify_basic_path = classification_dir / "basic.jsonl"
@@ -3871,17 +4093,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not text_files:
                 raise FileNotFoundError("No text files found to classify.")
             basic_settings = {
-                "api_url": shared_settings["api_url"],
-                "model_id": shared_settings["model_id"],
-                "api_key": shared_settings["api_key"],
+                "api_url": vision_settings["api_url"],
+                "model_id": vision_settings["model_id"],
+                "api_key": vision_settings["api_key"],
                 "prompt": shared_settings["prompt"],
             }
             for text_path in text_files:
                 self._raise_if_stop_requested()
                 if text_path.name in done_basic:
                     continue
-                content = text_path.read_text(encoding="utf-8", errors="ignore")
-                entry = self._classify_text(basic_settings, text_path.name, content)
+                image_path = _image_path_for_filename(text_path.name, image_dir)
+                entry = self._classify_image(basic_settings, text_path.name, image_path)
                 with classify_basic_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(entry))
                     handle.write("\n")
@@ -3902,6 +4124,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             )
             GLib.idle_add(self.show_toast, "Classification basic complete.")
         finally:
+            if server_process is not None:
+                _stop_server(server_process)
             GLib.idle_add(self.step_two_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_two_row, success)
             GLib.idle_add(self._stop_status_if_idle)
@@ -3989,6 +4213,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
     def _run_step_advanced(self) -> bool:
         success: bool | None = False
+        server_process: subprocess.Popen[str] | None = None
         try:
             self._raise_if_stop_requested()
             root_dir = self._resolve_case_root()
@@ -3997,8 +4222,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise ValueError("Selected PDFs must be in the same folder.")
                 raise ValueError("Choose PDF files or select a saved case first.")
             text_dir = root_dir / "text_pages"
+            image_dir = root_dir / "image_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
+            if not image_dir.exists():
+                raise FileNotFoundError("Run Create files to generate image files first.")
             classification_dir = root_dir / "classification"
             classify_basic_path = classification_dir / "basic_corrected.jsonl"
             if not classify_basic_path.exists():
@@ -4006,10 +4234,26 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "Run Correct basic classification to generate corrected classifications first."
                 )
             settings = load_advanced_classify_settings()
-            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
-                raise ValueError(
-                    "Configure classification API URL, model ID, and API key in Settings."
-                )
+            vision_settings = _resolve_vision_settings(settings)
+            use_local = bool(vision_settings.get("use_local"))
+            if use_local:
+                if not vision_settings["api_url"] or not vision_settings["model_id"]:
+                    raise ValueError(
+                        "Configure local vision server URL and model ID in Settings."
+                    )
+                if not vision_settings["start_command"]:
+                    raise ValueError("Configure local vision start command in Settings.")
+                server_process = _start_server(vision_settings["start_command"])
+                time.sleep(1.0)
+            else:
+                if (
+                    not vision_settings["api_url"]
+                    or not vision_settings["model_id"]
+                    or not vision_settings["api_key"]
+                ):
+                    raise ValueError(
+                        "Configure vision API URL, model ID, and API key in Settings."
+                    )
             entries = _load_jsonl_entries(classify_basic_path)
             if not entries:
                 raise FileNotFoundError("No entries found in basic_corrected.jsonl.")
@@ -4027,19 +4271,14 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 file_name = _extract_entry_value(entry, "file_name", "filename")
                 if not file_name:
                     return False
-                text_path = text_dir / file_name
-                if not text_path.exists():
-                    raise FileNotFoundError(
-                        f"Missing text file {file_name} for advanced classification."
-                    )
-                content = text_path.read_text(encoding="utf-8", errors="ignore")
+                image_path = _image_path_for_filename(file_name, image_dir)
                 payload = {
-                    "api_url": settings["api_url"],
-                    "model_id": settings["model_id"],
-                    "api_key": settings["api_key"],
+                    "api_url": vision_settings["api_url"],
+                    "model_id": vision_settings["model_id"],
+                    "api_key": vision_settings["api_key"],
                     "prompt": prompt,
                 }
-                response = self._classify_text(payload, file_name, content)
+                response = self._classify_image(payload, file_name, image_path)
                 if _is_truthy(_extract_entry_value(response, *truthy_keys)):
                     entry["page_type"] = updated_type
                     return True
@@ -4100,6 +4339,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 f"Advanced classification complete. {updates} updates applied.",
             )
         finally:
+            if server_process is not None:
+                _stop_server(server_process)
             GLib.idle_add(self.step_advanced_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_advanced_row, success)
             GLib.idle_add(self._stop_status_if_idle)
@@ -4166,6 +4407,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
     def _run_step_dates(self) -> bool:
         success: bool | None = False
+        server_process: subprocess.Popen[str] | None = None
         try:
             self._raise_if_stop_requested()
             root_dir = self._resolve_case_root()
@@ -4174,8 +4416,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise ValueError("Selected PDFs must be in the same folder.")
                 raise ValueError("Choose PDF files or select a saved case first.")
             text_dir = root_dir / "text_pages"
+            image_dir = root_dir / "image_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
+            if not image_dir.exists():
+                raise FileNotFoundError("Run Create files to generate image files first.")
             classification_dir = root_dir / "classification"
             classify_basic_path = classification_dir / "basic_corrected_advanced_corrected.jsonl"
             if not classify_basic_path.exists():
@@ -4183,10 +4428,26 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "Run Correct advanced classification to generate advanced corrections first."
                 )
             settings = load_classify_dates_settings()
-            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
-                raise ValueError(
-                    "Configure classification API URL, model ID, and API key in Settings."
-                )
+            vision_settings = _resolve_vision_settings(settings)
+            use_local = bool(vision_settings.get("use_local"))
+            if use_local:
+                if not vision_settings["api_url"] or not vision_settings["model_id"]:
+                    raise ValueError(
+                        "Configure local vision server URL and model ID in Settings."
+                    )
+                if not vision_settings["start_command"]:
+                    raise ValueError("Configure local vision start command in Settings.")
+                server_process = _start_server(vision_settings["start_command"])
+                time.sleep(1.0)
+            else:
+                if (
+                    not vision_settings["api_url"]
+                    or not vision_settings["model_id"]
+                    or not vision_settings["api_key"]
+                ):
+                    raise ValueError(
+                        "Configure vision API URL, model ID, and API key in Settings."
+                    )
             entries = _load_jsonl_entries(classify_basic_path)
             if not entries:
                 raise FileNotFoundError("No entries found in basic_corrected_advanced_corrected.jsonl.")
@@ -4211,21 +4472,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     file_name = _extract_entry_value(entry, "file_name", "filename")
                     if not file_name:
                         continue
-                    text_path = text_dir / file_name
-                    if not text_path.exists():
-                        raise FileNotFoundError(
-                            f"Missing text file {file_name} for hearing date classification."
-                        )
-                    content = text_path.read_text(encoding="utf-8", errors="ignore")
-                    response = self._classify_text(
+                    image_path = _image_path_for_filename(file_name, image_dir)
+                    response = self._classify_image(
                         {
-                            "api_url": settings["api_url"],
-                            "model_id": settings["model_id"],
-                            "api_key": settings["api_key"],
+                            "api_url": vision_settings["api_url"],
+                            "model_id": vision_settings["model_id"],
+                            "api_key": vision_settings["api_key"],
                             "prompt": settings["hearing_prompt"],
                         },
                         file_name,
-                        content,
+                        image_path,
                     )
                     date_value = _extract_entry_value(response, "date")
                     if date_value:
@@ -4238,21 +4494,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     file_name = _extract_entry_value(entry, "file_name", "filename")
                     if not file_name:
                         continue
-                    text_path = text_dir / file_name
-                    if not text_path.exists():
-                        raise FileNotFoundError(
-                            f"Missing text file {file_name} for minute order date classification."
-                        )
-                    content = text_path.read_text(encoding="utf-8", errors="ignore")
-                    response = self._classify_text(
+                    image_path = _image_path_for_filename(file_name, image_dir)
+                    response = self._classify_image(
                         {
-                            "api_url": settings["api_url"],
-                            "model_id": settings["model_id"],
-                            "api_key": settings["api_key"],
+                            "api_url": vision_settings["api_url"],
+                            "model_id": vision_settings["model_id"],
+                            "api_key": vision_settings["api_key"],
                             "prompt": settings["minute_prompt"],
                         },
                         file_name,
-                        content,
+                        image_path,
                     )
                     date_value = _extract_entry_value(response, "date")
                     if date_value:
@@ -4280,6 +4531,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             )
             GLib.idle_add(self.show_toast, f"Classification dates complete. {updates} updates applied.")
         finally:
+            if server_process is not None:
+                _stop_server(server_process)
             GLib.idle_add(self.step_dates_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_dates_row, success)
             GLib.idle_add(self._stop_status_if_idle)
@@ -4288,6 +4541,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
     def _run_step_names(self) -> bool:
         success: bool | None = False
+        server_process: subprocess.Popen[str] | None = None
         try:
             self._raise_if_stop_requested()
             root_dir = self._resolve_case_root()
@@ -4296,8 +4550,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise ValueError("Selected PDFs must be in the same folder.")
                 raise ValueError("Choose PDF files or select a saved case first.")
             text_dir = root_dir / "text_pages"
+            image_dir = root_dir / "image_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
+            if not image_dir.exists():
+                raise FileNotFoundError("Run Create files to generate image files first.")
             classification_dir = root_dir / "classification"
             dates_path = classification_dir / "basic_corrected_advanced_corrected_dates.jsonl"
             if not dates_path.exists():
@@ -4305,10 +4562,26 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "Run Classification dates to generate dated classifications first."
                 )
             settings = load_classify_names_settings()
-            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
-                raise ValueError(
-                    "Configure classification API URL, model ID, and API key in Settings."
-                )
+            vision_settings = _resolve_vision_settings(settings)
+            use_local = bool(vision_settings.get("use_local"))
+            if use_local:
+                if not vision_settings["api_url"] or not vision_settings["model_id"]:
+                    raise ValueError(
+                        "Configure local vision server URL and model ID in Settings."
+                    )
+                if not vision_settings["start_command"]:
+                    raise ValueError("Configure local vision start command in Settings.")
+                server_process = _start_server(vision_settings["start_command"])
+                time.sleep(1.0)
+            else:
+                if (
+                    not vision_settings["api_url"]
+                    or not vision_settings["model_id"]
+                    or not vision_settings["api_key"]
+                ):
+                    raise ValueError(
+                        "Configure vision API URL, model ID, and API key in Settings."
+                    )
             entries = _load_jsonl_entries(dates_path)
             if not entries:
                 raise FileNotFoundError(
@@ -4329,21 +4602,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     file_name = _extract_entry_value(entry, "file_name", "filename")
                     if not file_name:
                         continue
-                    text_path = text_dir / file_name
-                    if not text_path.exists():
-                        raise FileNotFoundError(
-                            f"Missing text file {file_name} for report name classification."
-                        )
-                    content = text_path.read_text(encoding="utf-8", errors="ignore")
-                    response = self._classify_text(
+                    image_path = _image_path_for_filename(file_name, image_dir)
+                    response = self._classify_image(
                         {
-                            "api_url": settings["api_url"],
-                            "model_id": settings["model_id"],
-                            "api_key": settings["api_key"],
+                            "api_url": vision_settings["api_url"],
+                            "model_id": vision_settings["model_id"],
+                            "api_key": vision_settings["api_key"],
                             "prompt": settings["report_prompt"],
                         },
                         file_name,
-                        content,
+                        image_path,
                     )
                     name_value = _extract_entry_value(response, "name", "report_name")
                     if name_value:
@@ -4356,21 +4624,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     file_name = _extract_entry_value(entry, "file_name", "filename")
                     if not file_name:
                         continue
-                    text_path = text_dir / file_name
-                    if not text_path.exists():
-                        raise FileNotFoundError(
-                            f"Missing text file {file_name} for form name classification."
-                        )
-                    content = text_path.read_text(encoding="utf-8", errors="ignore")
-                    response = self._classify_text(
+                    image_path = _image_path_for_filename(file_name, image_dir)
+                    response = self._classify_image(
                         {
-                            "api_url": settings["api_url"],
-                            "model_id": settings["model_id"],
-                            "api_key": settings["api_key"],
+                            "api_url": vision_settings["api_url"],
+                            "model_id": vision_settings["model_id"],
+                            "api_key": vision_settings["api_key"],
                             "prompt": settings["form_prompt"],
                         },
                         file_name,
-                        content,
+                        image_path,
                     )
                     name_value = _extract_entry_value(response, "name", "form_name")
                     if name_value:
@@ -4398,6 +4661,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             )
             GLib.idle_add(self.show_toast, f"Classification names complete. {updates} updates applied.")
         finally:
+            if server_process is not None:
+                _stop_server(server_process)
             GLib.idle_add(self.step_names_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_names_row, success)
             GLib.idle_add(self._stop_status_if_idle)
@@ -5455,6 +5720,73 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "end_page": end_page,
                 }
             )
+
+    def _classify_image(
+        self,
+        settings: dict[str, str],
+        filename: str,
+        image_path: Path,
+    ) -> dict[str, str]:
+        self._raise_if_stop_requested()
+        image_base64 = base64.b64encode(image_path.read_bytes()).decode()
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "RecordPrep/0.1",
+        }
+        api_key = settings.get("api_key", "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        body = {
+            "model": settings["model_id"],
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": settings["prompt"]},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{image_base64}"
+                            },
+                        }
+                    ],
+                },
+            ],
+        }
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(settings["api_url"], data=data, headers=headers, method="POST")
+        payload = _post_json_with_retries(req, timeout=300, error_label="Classifier request failed")
+        response_text = self._extract_response_text(payload)
+        try:
+            parsed = json.loads(self._extract_json_payload(response_text))
+        except json.JSONDecodeError:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            parsed = {}
+        expected_keys = _extract_prompt_keys(settings.get("prompt", ""))
+        filename_key = "file_name"
+        if not expected_keys:
+            result = {str(key): str(value) if value is not None else "" for key, value in parsed.items()}
+            result[filename_key] = filename
+            return result
+        if filename_key not in expected_keys:
+            expected_keys = [filename_key, *expected_keys]
+        normalized_parsed = {_normalize_key(key): key for key in parsed.keys()}
+        result: dict[str, str] = {}
+        for expected_key in expected_keys:
+            normalized_expected = _normalize_key(expected_key)
+            if "filename" in normalized_expected and filename:
+                result[expected_key] = filename
+                continue
+            source_key = normalized_parsed.get(normalized_expected)
+            if source_key is not None:
+                value = parsed.get(source_key)
+                result[expected_key] = str(value) if value is not None else ""
+            else:
+                result[expected_key] = ""
+        return result
 
     def _classify_text(
         self,
