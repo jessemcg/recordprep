@@ -3211,15 +3211,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._attach_step_status(self.step_two_row)
         self.step_list.append(self.step_two_row)
 
-        self.step_correct_basic_row = Adw.ActionRow(
-            title="Correct basic classification",
-            subtitle="Fix common classification mistakes in RT/CT basic files.",
-        )
-        self.step_correct_basic_row.set_activatable(True)
-        self.step_correct_basic_row.connect("activated", self.on_step_correct_basic_clicked)
-        self._attach_step_status(self.step_correct_basic_row)
-        self.step_list.append(self.step_correct_basic_row)
-
         self.step_advanced_row = Adw.ActionRow(
             title="Advanced classification",
             subtitle="Refine hearing, minute order, and form page types.",
@@ -3499,13 +3490,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         _set_if_pending(
             self.step_two_row,
             _rt_ct_ready(classification_dir / "RT_basic.jsonl", classification_dir / "CT_basic.jsonl"),
-        )
-        _set_if_pending(
-            self.step_correct_basic_row,
-            _rt_ct_ready(
-                classification_dir / "RT_basic_corrected.jsonl",
-                classification_dir / "CT_basic_corrected.jsonl",
-            ),
         )
         _set_if_pending(
             self.step_advanced_row,
@@ -3922,7 +3906,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ("strip_characters", self.step_strip_nonstandard_row, self._run_step_strip_nonstandard),
             ("infer_case", self.step_infer_case_row, self._run_step_infer_case),
             ("classify_basic", self.step_two_row, self._run_step_two),
-            ("correct_basic", self.step_correct_basic_row, self._run_step_correct_basic),
             ("classify_advanced", self.step_advanced_row, self._run_step_advanced),
             (
                 "classify_advanced_corrected",
@@ -3980,6 +3963,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if last_failed == "classify_filter":
             last_failed = "classify_advanced"
         if last_completed == "classify_filter":
+            last_completed = "classify_advanced"
+        if last_failed == "correct_basic":
+            last_failed = "classify_advanced"
+        if last_completed == "correct_basic":
             last_completed = "classify_advanced"
         if last_failed == "classify_further":
             last_failed = "classify_dates"
@@ -4278,20 +4265,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_advanced_correct_row.set_sensitive(False)
         self._start_step(self.step_advanced_correct_row)
         threading.Thread(target=self._run_step_advanced_correct, daemon=True).start()
-
-    def on_step_correct_basic_clicked(self, _row: Adw.ActionRow) -> None:
-        root_dir = self._resolve_case_root()
-        if root_dir is None:
-            if self.selected_pdfs:
-                self.show_toast("Selected PDFs must be in the same folder.")
-            else:
-                self.show_toast("Choose PDF files or select a saved case first.")
-            return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_correct_basic_row.set_sensitive(False)
-        self._start_step(self.step_correct_basic_row)
-        threading.Thread(target=self._run_step_correct_basic, daemon=True).start()
 
     def on_step_dates_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4599,118 +4572,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._stop_button_if_idle)
         return success is True
 
-    def _run_step_correct_basic(self) -> bool:
-        success: bool | None = False
-        try:
-            self._raise_if_stop_requested()
-            root_dir = self._resolve_case_root()
-            if root_dir is None:
-                if self.selected_pdfs:
-                    raise ValueError("Selected PDFs must be in the same folder.")
-                raise ValueError("Choose PDF files or select a saved case first.")
-            text_dir = root_dir / "text_pages"
-            if not text_dir.exists():
-                raise FileNotFoundError("Run Create files to generate text files first.")
-            classification_dir = root_dir / "classification"
-            _split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
-                root_dir, text_dir
-            )
-            rt_basic_path = classification_dir / "RT_basic.jsonl"
-            ct_basic_path = classification_dir / "CT_basic.jsonl"
-            rt_corrected_path = classification_dir / "RT_basic_corrected.jsonl"
-            ct_corrected_path = classification_dir / "CT_basic_corrected.jsonl"
-
-            if need_rt and not rt_basic_path.exists():
-                raise FileNotFoundError(
-                    "Run Classification basic to generate RT_basic.jsonl first."
-                )
-            if need_ct and not ct_basic_path.exists():
-                raise FileNotFoundError(
-                    "Run Classification basic to generate CT_basic.jsonl first."
-                )
-
-            def _correct_entries(entries: list[dict[str, Any]], targets: tuple[str, ...]) -> int:
-                if not entries:
-                    return 0
-                page_types = [
-                    _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
-                    for entry in entries
-                ]
-                corrected = list(page_types)
-                total = len(corrected)
-
-                def _bridge_page_type(target: str) -> None:
-                    source = list(corrected)
-                    for index in range(1, total - 1):
-                        self._raise_if_stop_requested()
-                        if source[index - 1] == target and source[index + 1] == target:
-                            if source[index] != target:
-                                corrected[index] = target
-                    for index in range(1, total - 2):
-                        self._raise_if_stop_requested()
-                        if source[index - 1] == target and source[index + 2] == target:
-                            if source[index] != target and source[index + 1] != target:
-                                corrected[index] = target
-                                corrected[index + 1] = target
-
-                for target in targets:
-                    _bridge_page_type(target)
-
-                corrections = 0
-                for entry, new_type, old_type in zip(entries, corrected, page_types):
-                    if new_type and new_type != old_type:
-                        entry["page_type"] = new_type
-                        corrections += 1
-                return corrections
-
-            corrections = 0
-            if need_rt:
-                rt_entries = _load_jsonl_entries(rt_basic_path)
-                if not rt_entries:
-                    raise FileNotFoundError("No entries found in RT_basic.jsonl.")
-                corrections += _correct_entries(rt_entries, ("hearing_page",))
-                with rt_corrected_path.open("w", encoding="utf-8") as handle:
-                    for entry in rt_entries:
-                        handle.write(json.dumps(entry))
-                        handle.write("\n")
-
-            if need_ct:
-                ct_entries = _load_jsonl_entries(ct_basic_path)
-                if not ct_entries:
-                    raise FileNotFoundError("No entries found in CT_basic.jsonl.")
-                corrections += _correct_entries(
-                    ct_entries,
-                    ("report_page", "minute_order_page", "minute_order", "form_page"),
-                )
-                with ct_corrected_path.open("w", encoding="utf-8") as handle:
-                    for entry in ct_entries:
-                        handle.write(json.dumps(entry))
-                        handle.write("\n")
-        except StopRequested:
-            success = None
-        except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Correct basic classification failed: {exc}")
-        else:
-            success = True
-            self._safe_update_manifest(
-                root_dir,
-                {
-                    "last_completed_step": "correct_basic",
-                    "last_failed_step": None,
-                    "last_failed_at": None,
-                },
-            )
-            GLib.idle_add(
-                self.show_toast,
-                f"Correct basic classification complete. {corrections} changes applied.",
-            )
-        finally:
-            GLib.idle_add(self.step_correct_basic_row.set_sensitive, True)
-            GLib.idle_add(self._finish_step, self.step_correct_basic_row, success)
-            GLib.idle_add(self._stop_status_if_idle)
-            GLib.idle_add(self._stop_button_if_idle)
-        return success is True
-
     def _run_step_advanced(self) -> bool:
         success: bool | None = False
         server_process: subprocess.Popen[str] | None = None
@@ -4752,18 +4613,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             _split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
             )
-            rt_corrected_path = classification_dir / "RT_basic_corrected.jsonl"
-            ct_corrected_path = classification_dir / "CT_basic_corrected.jsonl"
+            rt_corrected_path = classification_dir / "RT_basic.jsonl"
+            ct_corrected_path = classification_dir / "CT_basic.jsonl"
             rt_advanced_path = classification_dir / "RT_basic_corrected_advanced.jsonl"
             ct_advanced_path = classification_dir / "CT_basic_corrected_advanced.jsonl"
             classification_dir.mkdir(parents=True, exist_ok=True)
             if need_rt and not rt_corrected_path.exists():
                 raise FileNotFoundError(
-                    "Run Correct basic classification to generate RT_basic_corrected.jsonl first."
+                    "Run Classification basic to generate RT_basic.jsonl first."
                 )
             if need_ct and not ct_corrected_path.exists():
                 raise FileNotFoundError(
-                    "Run Correct basic classification to generate CT_basic_corrected.jsonl first."
+                    "Run Classification basic to generate CT_basic.jsonl first."
                 )
 
             def _maybe_update_page_type(
@@ -4796,7 +4657,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if need_rt:
                 rt_entries = _load_jsonl_entries(rt_corrected_path)
                 if not rt_entries:
-                    raise FileNotFoundError("No entries found in RT_basic_corrected.jsonl.")
+                    raise FileNotFoundError("No entries found in RT_basic.jsonl.")
                 for entry in rt_entries:
                     self._raise_if_stop_requested()
                     if _maybe_update_page_type(
@@ -4815,7 +4676,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if need_ct:
                 ct_entries = _load_jsonl_entries(ct_corrected_path)
                 if not ct_entries:
-                    raise FileNotFoundError("No entries found in CT_basic_corrected.jsonl.")
+                    raise FileNotFoundError("No entries found in CT_basic.jsonl.")
                 for entry in ct_entries:
                     self._raise_if_stop_requested()
                     if _maybe_update_page_type(
