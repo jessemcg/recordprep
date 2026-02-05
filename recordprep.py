@@ -175,11 +175,10 @@ DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT = (
 )
 DEFAULT_ADVANCED_HEARING_PROMPT = (
     "You are reviewing a page labeled RT_body in a legal transcript. "
-    "Determine if this is the first page of the hearing. "
-    "The first page often has the hearing date near the top and dialogue consistent with the "
-    "beginning of a hearing. "
-    "Return JSON with keys: first_page. "
-    "first_page must be yes or no."
+    "Determine if this is the last page of the hearing. "
+    "The last page often has wrap-up language, signatures, or the end of dialogue. "
+    "Return JSON with keys: last_page. "
+    "last_page must be yes or no."
 )
 DEFAULT_ADVANCED_MINUTE_PROMPT = (
     "You are reviewing a page labeled CT_minute_order in a legal transcript. "
@@ -1167,31 +1166,25 @@ def _write_manifest(
         "classification": {
             "rt_basic": _relpath(classification_dir / "RT_basic.jsonl"),
             "ct_basic": _relpath(classification_dir / "CT_basic.jsonl"),
-            "rt_basic_corrected": _relpath(classification_dir / "RT_basic_corrected.jsonl"),
-            "ct_basic_corrected": _relpath(classification_dir / "CT_basic_corrected.jsonl"),
-            "rt_basic_corrected_advanced": _relpath(
-                classification_dir / "RT_basic_corrected_advanced.jsonl"
+            "rt_basic": _relpath(classification_dir / "RT_basic.jsonl"),
+            "ct_basic": _relpath(classification_dir / "CT_basic.jsonl"),
+            "rt_basic_advanced": _relpath(
+                classification_dir / "RT_basic_advanced.jsonl"
             ),
-            "ct_basic_corrected_advanced": _relpath(
-                classification_dir / "CT_basic_corrected_advanced.jsonl"
+            "ct_basic_advanced": _relpath(
+                classification_dir / "CT_basic_advanced.jsonl"
             ),
-            "rt_basic_corrected_advanced_corrected": _relpath(
-                classification_dir / "RT_basic_corrected_advanced_corrected.jsonl"
+            "rt_basic_advanced_dates": _relpath(
+                classification_dir / "RT_basic_advanced_dates.jsonl"
             ),
-            "ct_basic_corrected_advanced_corrected": _relpath(
-                classification_dir / "CT_basic_corrected_advanced_corrected.jsonl"
+            "ct_basic_advanced_dates": _relpath(
+                classification_dir / "CT_basic_advanced_dates.jsonl"
             ),
-            "rt_basic_corrected_advanced_corrected_dates": _relpath(
-                classification_dir / "RT_basic_corrected_advanced_corrected_dates.jsonl"
+            "rt_basic_advanced_dates_names": _relpath(
+                classification_dir / "RT_basic_advanced_dates_names.jsonl"
             ),
-            "ct_basic_corrected_advanced_corrected_dates": _relpath(
-                classification_dir / "CT_basic_corrected_advanced_corrected_dates.jsonl"
-            ),
-            "rt_basic_corrected_advanced_corrected_dates_names": _relpath(
-                classification_dir / "RT_basic_corrected_advanced_corrected_dates_names.jsonl"
-            ),
-            "ct_basic_corrected_advanced_corrected_dates_names": _relpath(
-                classification_dir / "CT_basic_corrected_advanced_corrected_dates_names.jsonl"
+            "ct_basic_advanced_dates_names": _relpath(
+                classification_dir / "CT_basic_advanced_dates_names.jsonl"
             ),
             "hearings_pages": _relpath(classification_dir / "hearings_pages.jsonl"),
             "minute_order_pages": _relpath(classification_dir / "minute_order_pages.jsonl"),
@@ -2090,7 +2083,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         classify_advanced_box.set_margin_bottom(8)
         classify_advanced_box.set_margin_start(12)
         classify_advanced_box.set_margin_end(12)
-        classify_advanced_label = Gtk.Label(label="Advanced classification", xalign=0)
+        classify_advanced_label = Gtk.Label(label="Classification advanced", xalign=0)
         classify_advanced_box.append(classify_advanced_label)
         classify_advanced_row.set_child(classify_advanced_box)
         prompt_list.append(classify_advanced_row)
@@ -2518,7 +2511,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         page_box.set_margin_end(12)
         page_box.set_vexpand(True)
 
-        title_label = Gtk.Label(label="Advanced classification", xalign=0)
+        title_label = Gtk.Label(label="Classification advanced", xalign=0)
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
@@ -2533,7 +2526,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         prompt_section.set_hexpand(True)
         prompt_section.set_vexpand(True)
 
-        hearing_label = Gtk.Label(label="Hearing First Page Prompt", xalign=0)
+        hearing_label = Gtk.Label(label="Hearing Last Page Prompt", xalign=0)
         hearing_label.add_css_class("dim-label")
         prompt_section.append(hearing_label)
         hearing_scroller, hearing_buffer = self._build_prompt_editor(
@@ -3218,22 +3211,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_list.append(self.step_two_row)
 
         self.step_advanced_row = Adw.ActionRow(
-            title="Advanced classification",
+            title="Classification advanced",
             subtitle="Refine hearing, minute order, and form page types.",
         )
         self.step_advanced_row.set_activatable(True)
         self.step_advanced_row.connect("activated", self.on_step_advanced_clicked)
         self._attach_step_status(self.step_advanced_row)
         self.step_list.append(self.step_advanced_row)
-
-        self.step_advanced_correct_row = Adw.ActionRow(
-            title="Correct advanced classification",
-            subtitle="Fix consecutive hearing first-page markers.",
-        )
-        self.step_advanced_correct_row.set_activatable(True)
-        self.step_advanced_correct_row.connect("activated", self.on_step_advanced_correct_clicked)
-        self._attach_step_status(self.step_advanced_correct_row)
-        self.step_list.append(self.step_advanced_correct_row)
 
         self.step_dates_row = Adw.ActionRow(
             title="Classification dates",
@@ -3500,29 +3484,22 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         _set_if_pending(
             self.step_advanced_row,
             _rt_ct_ready(
-                classification_dir / "RT_basic_corrected_advanced.jsonl",
-                classification_dir / "CT_basic_corrected_advanced.jsonl",
-            ),
-        )
-        _set_if_pending(
-            self.step_advanced_correct_row,
-            _rt_ct_ready(
-                classification_dir / "RT_basic_corrected_advanced_corrected.jsonl",
-                classification_dir / "CT_basic_corrected_advanced_corrected.jsonl",
+                classification_dir / "RT_basic_advanced.jsonl",
+                classification_dir / "CT_basic_advanced.jsonl",
             ),
         )
         _set_if_pending(
             self.step_dates_row,
             _rt_ct_ready(
-                classification_dir / "RT_basic_corrected_advanced_corrected_dates.jsonl",
-                classification_dir / "CT_basic_corrected_advanced_corrected_dates.jsonl",
+                classification_dir / "RT_basic_advanced_dates.jsonl",
+                classification_dir / "CT_basic_advanced_dates.jsonl",
             ),
         )
         _set_if_pending(
             self.step_names_row,
             _rt_ct_ready(
-                classification_dir / "RT_basic_corrected_advanced_corrected_dates_names.jsonl",
-                classification_dir / "CT_basic_corrected_advanced_corrected_dates_names.jsonl",
+                classification_dir / "RT_basic_advanced_dates_names.jsonl",
+                classification_dir / "CT_basic_advanced_dates_names.jsonl",
             ),
         )
         _set_if_pending(self.step_six_row, (artifacts_dir / "toc.txt").exists())
@@ -3913,11 +3890,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ("infer_case", self.step_infer_case_row, self._run_step_infer_case),
             ("classify_basic", self.step_two_row, self._run_step_two),
             ("classify_advanced", self.step_advanced_row, self._run_step_advanced),
-            (
-                "classify_advanced_corrected",
-                self.step_advanced_correct_row,
-                self._run_step_advanced_correct,
-            ),
             ("classify_dates", self.step_dates_row, self._run_step_dates),
             ("classify_names", self.step_names_row, self._run_step_names),
             ("build_toc", self.step_six_row, self._run_step_six),
@@ -3974,6 +3946,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             last_failed = "classify_advanced"
         if last_completed == "correct_basic":
             last_completed = "classify_advanced"
+        if last_failed == "classify_advanced_corrected":
+            last_failed = "classify_dates"
+        if last_completed == "classify_advanced_corrected":
+            last_completed = "classify_dates"
         if last_failed == "classify_further":
             last_failed = "classify_dates"
         if last_completed == "classify_further":
@@ -4257,20 +4233,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_advanced_row.set_sensitive(False)
         self._start_step(self.step_advanced_row)
         threading.Thread(target=self._run_step_advanced, daemon=True).start()
-
-    def on_step_advanced_correct_clicked(self, _row: Adw.ActionRow) -> None:
-        root_dir = self._resolve_case_root()
-        if root_dir is None:
-            if self.selected_pdfs:
-                self.show_toast("Selected PDFs must be in the same folder.")
-            else:
-                self.show_toast("Choose PDF files or select a saved case first.")
-            return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_advanced_correct_row.set_sensitive(False)
-        self._start_step(self.step_advanced_correct_row)
-        threading.Thread(target=self._run_step_advanced_correct, daemon=True).start()
 
     def on_step_dates_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4619,16 +4581,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             _split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
             )
-            rt_corrected_path = classification_dir / "RT_basic.jsonl"
-            ct_corrected_path = classification_dir / "CT_basic.jsonl"
-            rt_advanced_path = classification_dir / "RT_basic_corrected_advanced.jsonl"
-            ct_advanced_path = classification_dir / "CT_basic_corrected_advanced.jsonl"
+            rt_basic_path = classification_dir / "RT_basic.jsonl"
+            ct_basic_path = classification_dir / "CT_basic.jsonl"
+            rt_advanced_path = classification_dir / "RT_basic_advanced.jsonl"
+            ct_advanced_path = classification_dir / "CT_basic_advanced.jsonl"
             classification_dir.mkdir(parents=True, exist_ok=True)
-            if need_rt and not rt_corrected_path.exists():
+            if need_rt and not rt_basic_path.exists():
                 raise FileNotFoundError(
                     "Run Classification basic to generate RT_basic.jsonl first."
                 )
-            if need_ct and not ct_corrected_path.exists():
+            if need_ct and not ct_basic_path.exists():
                 raise FileNotFoundError(
                     "Run Classification basic to generate CT_basic.jsonl first."
                 )
@@ -4661,17 +4623,22 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
             updates = 0
             if need_rt:
-                rt_entries = _load_jsonl_entries(rt_corrected_path)
+                rt_entries = _load_jsonl_entries(rt_basic_path)
                 if not rt_entries:
                     raise FileNotFoundError("No entries found in RT_basic.jsonl.")
                 for entry in rt_entries:
                     self._raise_if_stop_requested()
                     if _maybe_update_page_type(
                         entry,
-                        ("rt_body",),
-                        "RT_body_first_page",
+                        ("rt_body", "hearing_page", "hearing"),
+                        "hearing_page_last_page",
                         settings["hearing_prompt"],
-                        ("first_page", "first", "is_first_page", "is_first"),
+                        (
+                            "last_page",
+                            "last",
+                            "is_last_page",
+                            "is_last",
+                        ),
                     ):
                         updates += 1
                 with rt_advanced_path.open("w", encoding="utf-8") as handle:
@@ -4680,7 +4647,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         handle.write("\n")
 
             if need_ct:
-                ct_entries = _load_jsonl_entries(ct_corrected_path)
+                ct_entries = _load_jsonl_entries(ct_basic_path)
                 if not ct_entries:
                     raise FileNotFoundError("No entries found in CT_basic.jsonl.")
                 for entry in ct_entries:
@@ -4709,7 +4676,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except StopRequested:
             success = None
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Advanced classification failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Classification advanced failed: {exc}")
         else:
             success = True
             self._safe_update_manifest(
@@ -4722,112 +4689,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             )
             GLib.idle_add(
                 self.show_toast,
-                f"Advanced classification complete. {updates} updates applied.",
+                f"Classification advanced complete. {updates} updates applied.",
             )
         finally:
             if server_process is not None:
                 _stop_server(server_process)
             GLib.idle_add(self.step_advanced_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_advanced_row, success)
-            GLib.idle_add(self._stop_status_if_idle)
-            GLib.idle_add(self._stop_button_if_idle)
-        return success is True
-
-    def _run_step_advanced_correct(self) -> bool:
-        success: bool | None = False
-        try:
-            self._raise_if_stop_requested()
-            root_dir = self._resolve_case_root()
-            if root_dir is None:
-                if self.selected_pdfs:
-                    raise ValueError("Selected PDFs must be in the same folder.")
-                raise ValueError("Choose PDF files or select a saved case first.")
-            text_dir = root_dir / "text_pages"
-            if not text_dir.exists():
-                raise FileNotFoundError("Run Create files to generate text files first.")
-            classification_dir = root_dir / "classification"
-            _split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
-                root_dir, text_dir
-            )
-            rt_advanced_path = classification_dir / "RT_basic_corrected_advanced.jsonl"
-            ct_advanced_path = classification_dir / "CT_basic_corrected_advanced.jsonl"
-            rt_corrected_path = (
-                classification_dir / "RT_basic_corrected_advanced_corrected.jsonl"
-            )
-            ct_corrected_path = (
-                classification_dir / "CT_basic_corrected_advanced_corrected.jsonl"
-            )
-            if need_rt and not rt_advanced_path.exists():
-                raise FileNotFoundError(
-                    "Run Advanced classification to generate RT_basic_corrected_advanced.jsonl first."
-                )
-            if need_ct and not ct_advanced_path.exists():
-                raise FileNotFoundError(
-                    "Run Advanced classification to generate CT_basic_corrected_advanced.jsonl first."
-                )
-
-            corrections = 0
-            if need_rt:
-                rt_entries = _load_jsonl_entries(rt_advanced_path)
-                if not rt_entries:
-                    raise FileNotFoundError(
-                        "No entries found in RT_basic_corrected_advanced.jsonl."
-                    )
-                for index in range(len(rt_entries) - 1):
-                    self._raise_if_stop_requested()
-                    current = rt_entries[index]
-                    next_entry = rt_entries[index + 1]
-                    current_type = _extract_entry_value(
-                        current, "page_type", "pagetype"
-                    ).strip().lower()
-                    next_type = _extract_entry_value(
-                        next_entry, "page_type", "pagetype"
-                    ).strip().lower()
-                    if current_type == "rt_body_first_page" and next_type == "rt_body_first_page":
-                        current["page_type"] = "rt_body"
-                        corrections += 1
-                    if (
-                        current_type == "hearing_page_last_page"
-                        and next_type == "hearing_page_last_page"
-                    ):
-                        current["page_type"] = "hearing_page"
-                        corrections += 1
-                with rt_corrected_path.open("w", encoding="utf-8") as handle:
-                    for entry in rt_entries:
-                        handle.write(json.dumps(entry))
-                        handle.write("\n")
-
-            if need_ct:
-                ct_entries = _load_jsonl_entries(ct_advanced_path)
-                if not ct_entries:
-                    raise FileNotFoundError(
-                        "No entries found in CT_basic_corrected_advanced.jsonl."
-                    )
-                with ct_corrected_path.open("w", encoding="utf-8") as handle:
-                    for entry in ct_entries:
-                        handle.write(json.dumps(entry))
-                        handle.write("\n")
-        except StopRequested:
-            success = None
-        except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Correct advanced classification failed: {exc}")
-        else:
-            success = True
-            self._safe_update_manifest(
-                root_dir,
-                {
-                    "last_completed_step": "classify_advanced_corrected",
-                    "last_failed_step": None,
-                    "last_failed_at": None,
-                },
-            )
-            GLib.idle_add(
-                self.show_toast,
-                f"Correct advanced classification complete. {corrections} changes applied.",
-            )
-        finally:
-            GLib.idle_add(self.step_advanced_correct_row.set_sensitive, True)
-            GLib.idle_add(self._finish_step, self.step_advanced_correct_row, success)
             GLib.idle_add(self._stop_status_if_idle)
             GLib.idle_add(self._stop_button_if_idle)
         return success is True
@@ -4873,25 +4741,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             _split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
             )
-            rt_corrected_path = (
-                classification_dir / "RT_basic_corrected_advanced_corrected.jsonl"
-            )
-            ct_corrected_path = (
-                classification_dir / "CT_basic_corrected_advanced_corrected.jsonl"
-            )
-            rt_dated_path = (
-                classification_dir / "RT_basic_corrected_advanced_corrected_dates.jsonl"
-            )
-            ct_dated_path = (
-                classification_dir / "CT_basic_corrected_advanced_corrected_dates.jsonl"
-            )
-            if need_rt and not rt_corrected_path.exists():
+            rt_advanced_path = classification_dir / "RT_basic_advanced.jsonl"
+            ct_advanced_path = classification_dir / "CT_basic_advanced.jsonl"
+            rt_dated_path = classification_dir / "RT_basic_advanced_dates.jsonl"
+            ct_dated_path = classification_dir / "CT_basic_advanced_dates.jsonl"
+            if need_rt and not rt_advanced_path.exists():
                 raise FileNotFoundError(
-                    "Run Correct advanced classification to generate RT_basic_corrected_advanced_corrected.jsonl first."
+                    "Run Advanced classification to generate RT_basic_advanced.jsonl first."
                 )
-            if need_ct and not ct_corrected_path.exists():
+            if need_ct and not ct_advanced_path.exists():
                 raise FileNotFoundError(
-                    "Run Correct advanced classification to generate CT_basic_corrected_advanced_corrected.jsonl first."
+                    "Run Advanced classification to generate CT_basic_advanced.jsonl first."
                 )
 
             hearing_types = {
@@ -4914,10 +4774,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             updates = 0
 
             if need_rt:
-                rt_entries = _load_jsonl_entries(rt_corrected_path)
+                rt_entries = _load_jsonl_entries(rt_advanced_path)
                 if not rt_entries:
                     raise FileNotFoundError(
-                        "No entries found in RT_basic_corrected_advanced_corrected.jsonl."
+                        "No entries found in RT_basic_advanced.jsonl."
                     )
                 previous_hearing = False
                 for entry in rt_entries:
@@ -4955,10 +4815,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         handle.write("\n")
 
             if need_ct:
-                ct_entries = _load_jsonl_entries(ct_corrected_path)
+                ct_entries = _load_jsonl_entries(ct_advanced_path)
                 if not ct_entries:
                     raise FileNotFoundError(
-                        "No entries found in CT_basic_corrected_advanced_corrected.jsonl."
+                        "No entries found in CT_basic_advanced.jsonl."
                     )
                 for entry in ct_entries:
                     self._raise_if_stop_requested()
@@ -5054,25 +4914,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
             )
-            rt_dated_path = (
-                classification_dir / "RT_basic_corrected_advanced_corrected_dates.jsonl"
-            )
-            ct_dated_path = (
-                classification_dir / "CT_basic_corrected_advanced_corrected_dates.jsonl"
-            )
-            rt_named_path = (
-                classification_dir / "RT_basic_corrected_advanced_corrected_dates_names.jsonl"
-            )
-            ct_named_path = (
-                classification_dir / "CT_basic_corrected_advanced_corrected_dates_names.jsonl"
-            )
+            rt_dated_path = classification_dir / "RT_basic_advanced_dates.jsonl"
+            ct_dated_path = classification_dir / "CT_basic_advanced_dates.jsonl"
+            rt_named_path = classification_dir / "RT_basic_advanced_dates_names.jsonl"
+            ct_named_path = classification_dir / "CT_basic_advanced_dates_names.jsonl"
             if need_rt and not rt_dated_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates to generate RT_basic_corrected_advanced_corrected_dates.jsonl first."
+                    "Run Classification dates to generate RT_basic_advanced_dates.jsonl first."
                 )
             if need_ct and not ct_dated_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates to generate CT_basic_corrected_advanced_corrected_dates.jsonl first."
+                    "Run Classification dates to generate CT_basic_advanced_dates.jsonl first."
                 )
             report_types = {"report", "report_page"}
             form_first_types = {"form_page_first_page", "form_first_page", "ct_form_first_page"}
@@ -5082,7 +4934,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 rt_entries = _load_jsonl_entries(rt_dated_path)
                 if not rt_entries:
                     raise FileNotFoundError(
-                        "No entries found in RT_basic_corrected_advanced_corrected_dates.jsonl."
+                        "No entries found in RT_basic_advanced_dates.jsonl."
                     )
                 with rt_named_path.open("w", encoding="utf-8") as handle:
                     for entry in rt_entries:
@@ -5093,7 +4945,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 ct_entries = _load_jsonl_entries(ct_dated_path)
                 if not ct_entries:
                     raise FileNotFoundError(
-                        "No entries found in CT_basic_corrected_advanced_corrected_dates.jsonl."
+                        "No entries found in CT_basic_advanced_dates.jsonl."
                     )
                 previous_report = False
                 for entry in ct_entries:
@@ -5190,19 +5042,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
             )
-            rt_named_path = (
-                classification_dir / "RT_basic_corrected_advanced_corrected_dates_names.jsonl"
-            )
-            ct_named_path = (
-                classification_dir / "CT_basic_corrected_advanced_corrected_dates_names.jsonl"
-            )
+            rt_named_path = classification_dir / "RT_basic_advanced_dates_names.jsonl"
+            ct_named_path = classification_dir / "CT_basic_advanced_dates_names.jsonl"
             if need_rt and not rt_named_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates and names to generate RT_basic_corrected_advanced_corrected_dates_names.jsonl first."
+                    "Run Classification dates and names to generate RT_basic_advanced_dates_names.jsonl first."
                 )
             if need_ct and not ct_named_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates and names to generate CT_basic_corrected_advanced_corrected_dates_names.jsonl first."
+                    "Run Classification dates and names to generate CT_basic_advanced_dates_names.jsonl first."
                 )
             derived_dir.mkdir(parents=True, exist_ok=True)
             paths: list[Path] = []
@@ -5401,19 +5249,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
             )
-            rt_named_path = (
-                classification_dir / "RT_basic_corrected_advanced_corrected_dates_names.jsonl"
-            )
-            ct_named_path = (
-                classification_dir / "CT_basic_corrected_advanced_corrected_dates_names.jsonl"
-            )
+            rt_named_path = classification_dir / "RT_basic_advanced_dates_names.jsonl"
+            ct_named_path = classification_dir / "CT_basic_advanced_dates_names.jsonl"
             if need_rt and not rt_named_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates and names to generate RT_basic_corrected_advanced_corrected_dates_names.jsonl first."
+                    "Run Classification dates and names to generate RT_basic_advanced_dates_names.jsonl first."
                 )
             if need_ct and not ct_named_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates and names to generate CT_basic_corrected_advanced_corrected_dates_names.jsonl first."
+                    "Run Classification dates and names to generate CT_basic_advanced_dates_names.jsonl first."
                 )
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_by_file: dict[str, str] = {}
