@@ -137,7 +137,7 @@ TEXT_SOURCE_EMBEDDED = "embedded"
 TEXT_SOURCE_LOCAL_OCR = "local_ocr"
 DEFAULT_TEXT_SOURCE = TEXT_SOURCE_EMBEDDED
 DEFAULT_CLASSIFIER_PROMPT = (
-    "You are labeling a single page of an OCR'd legal transcript. "
+    "You are labeling a single page of a legal transcript. "
     "Return JSON with keys: \"page_type\". "
     "page_type must be one of: hearing_page, minute_order_page, report_page, form_page, other. "
     "Use hearing_page for hearing transcript pages, minute_order_page for minute orders, "
@@ -154,7 +154,7 @@ DEFAULT_CLASSIFIER_PROMPT = (
     "Other example: \"Table of Contents\" -> {\"page_type\":\"other\"}"
 )
 DEFAULT_CLASSIFY_HEARING_DATES_PROMPT = (
-    "You are extracting the hearing date from the first hearing page of an OCR'd legal transcript. "
+    "You are extracting the hearing date from the first hearing page of a legal transcript. "
     "The date is usually near the top and not in the footer. "
     "Return JSON with keys: date. "
     "date should be a long-form U.S. date if present. "
@@ -162,51 +162,52 @@ DEFAULT_CLASSIFY_HEARING_DATES_PROMPT = (
 )
 DEFAULT_CLASSIFY_MINUTE_DATES_PROMPT = (
     "You are extracting the minute order date from a minute order first page "
-    "of an OCR'd legal transcript. "
+    "of a legal transcript. "
     "Return JSON with keys: date. "
     "date should be a long-form U.S. date if present. "
     "If unknown, use an empty string."
 )
 DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT = (
-    "You are reviewing the first page of a report in an OCR'd legal transcript. "
+    "You are reviewing the first page of a report in a legal transcript. "
     "Only return a report name if it matches the approved list provided. "
     "Return JSON with keys: name. "
     "name must be the matching report title from the list; otherwise use an empty string."
 )
 DEFAULT_ADVANCED_HEARING_PROMPT = (
-    "You are reviewing a page labeled hearing_page in an OCR'd legal transcript. "
-    "Determine if this page is the last page of that hearing. "
-    "Look for cues like proceedings concluded, hearing concluded, adjourned, or off the record. "
-    "Return JSON with keys: is_last_page. "
-    "is_last_page must be yes or no."
+    "You are reviewing a page labeled RT_body in a legal transcript. "
+    "Determine if this is the first page of the hearing. "
+    "The first page often has the hearing date near the top and dialogue consistent with the "
+    "beginning of a hearing. "
+    "Return JSON with keys: first_page. "
+    "first_page must be yes or no."
 )
 DEFAULT_ADVANCED_MINUTE_PROMPT = (
-    "You are reviewing a page labeled minute_order_page in an OCR'd legal transcript. "
+    "You are reviewing a page labeled CT_minute_order in a legal transcript. "
     "Determine if this is the first page of the minute order (e.g., Page 1 of X). "
-    "Return JSON with keys: is_first_page. "
-    "is_first_page must be yes or no."
+    "Return JSON with keys: first_page. "
+    "first_page must be yes or no."
 )
 DEFAULT_ADVANCED_FORM_PROMPT = (
-    "You are reviewing a page labeled form_page in an OCR'd legal transcript. "
+    "You are reviewing a page labeled CT_form in a legal transcript. "
     "Determine if this is the first page of the form (e.g., Page 1 of X). "
-    "Return JSON with keys: is_first_page. "
-    "is_first_page must be yes or no."
+    "Return JSON with keys: first_page. "
+    "first_page must be yes or no."
 )
 DEFAULT_CLASSIFY_FORM_NAMES_PROMPT = (
-    "You are reviewing the first page of a form in an OCR'd legal transcript. "
+    "You are reviewing the first page of a form in a legal transcript. "
     "Only return a form name if it matches the approved list provided. "
     "Return JSON with keys: name. "
     "name must be the matching form title from the list; otherwise use an empty string."
 )
 DEFAULT_CASE_NAME_PROMPT = (
-    "You are inferring the case name from the first three pages of an OCR'd legal transcript. "
+    "You are inferring the case name from the first three pages of a legal transcript. "
     "Return only the case name as plain text. "
     "The case name should replace spaces with underscores, like In_re_Mark_T or "
     "Social_Services_v_Breanna_F. "
     "If unknown, use an empty string."
 )
 DEFAULT_OPTIMIZE_ATTORNEYS_PROMPT = (
-    "You are reviewing an excerpt from an OCR'd hearing transcript. "
+    "You are reviewing an excerpt from a hearing transcript. "
     "Identify the attorneys who appear and who they represent. "
     "Respond with 1-3 narrative sentences. "
     "Do not use lists or markdown. "
@@ -419,6 +420,7 @@ def _load_classify_date_targets(classify_path: Path) -> list[tuple[str, str]]:
             "hearing_page_first_page",
             "minute_order_first_page",
             "minute_order_page_first_page",
+            "ct_minute_order_first_page",
         }:
             targets.append((file_name, page_type))
     return targets
@@ -479,7 +481,11 @@ def _load_classify_form_targets(classify_path: Path) -> list[tuple[str, str]]:
                 continue
             file_name = str(payload.get("file_name", "") or "").strip()
             page_type = str(payload.get("page_type", "") or "").strip().lower()
-            if not file_name or page_type not in {"form_first_page", "form_page_first_page"}:
+            if not file_name or page_type not in {
+                "form_first_page",
+                "form_page_first_page",
+                "ct_form_first_page",
+            }:
                 continue
             targets.append((file_name, page_type))
     return targets
@@ -2527,7 +2533,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         prompt_section.set_hexpand(True)
         prompt_section.set_vexpand(True)
 
-        hearing_label = Gtk.Label(label="Hearing Last Page Prompt", xalign=0)
+        hearing_label = Gtk.Label(label="Hearing First Page Prompt", xalign=0)
         hearing_label.add_css_class("dim-label")
         prompt_section.append(hearing_label)
         hearing_scroller, hearing_buffer = self._build_prompt_editor(
@@ -3222,7 +3228,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.step_advanced_correct_row = Adw.ActionRow(
             title="Correct advanced classification",
-            subtitle="Fix consecutive hearing last-page markers.",
+            subtitle="Fix consecutive hearing first-page markers.",
         )
         self.step_advanced_correct_row.set_activatable(True)
         self.step_advanced_correct_row.connect("activated", self.on_step_advanced_correct_clicked)
@@ -4662,10 +4668,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     self._raise_if_stop_requested()
                     if _maybe_update_page_type(
                         entry,
-                        ("hearing_page", "hearing"),
-                        "hearing_page_last_page",
+                        ("rt_body",),
+                        "RT_body_first_page",
                         settings["hearing_prompt"],
-                        ("is_last_page", "last_page", "last", "is_last"),
+                        ("first_page", "first", "is_first_page", "is_first"),
                     ):
                         updates += 1
                 with rt_advanced_path.open("w", encoding="utf-8") as handle:
@@ -4681,19 +4687,19 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     self._raise_if_stop_requested()
                     if _maybe_update_page_type(
                         entry,
-                        ("minute_order_page", "minute_order"),
-                        "minute_order_page_first_page",
+                        ("ct_minute_order",),
+                        "CT_minute_order_first_page",
                         settings["minute_prompt"],
-                        ("is_first_page", "first_page", "first", "is_first"),
+                        ("first_page", "first", "is_first_page", "is_first"),
                     ):
                         updates += 1
                         continue
                     if _maybe_update_page_type(
                         entry,
-                        ("form_page", "form"),
-                        "form_page_first_page",
+                        ("ct_form",),
+                        "CT_form_first_page",
                         settings["form_prompt"],
-                        ("is_first_page", "first_page", "first", "is_first"),
+                        ("first_page", "first", "is_first_page", "is_first"),
                     ):
                         updates += 1
                 with ct_advanced_path.open("w", encoding="utf-8") as handle:
@@ -4777,6 +4783,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     next_type = _extract_entry_value(
                         next_entry, "page_type", "pagetype"
                     ).strip().lower()
+                    if current_type == "rt_body_first_page" and next_type == "rt_body_first_page":
+                        current["page_type"] = "rt_body"
+                        corrections += 1
                     if (
                         current_type == "hearing_page_last_page"
                         and next_type == "hearing_page_last_page"
@@ -4885,8 +4894,23 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "Run Correct advanced classification to generate CT_basic_corrected_advanced_corrected.jsonl first."
                 )
 
-            hearing_types = {"hearing", "hearing_page"}
-            minute_first_types = {"minute_order_page_first_page", "minute_order_first_page"}
+            hearing_types = {
+                "hearing",
+                "hearing_page",
+                "hearing_first_page",
+                "hearing_page_first_page",
+                "rt_body",
+                "rt_body_first_page",
+            }
+            hearing_first_types = {
+                "hearing_first_page",
+                "hearing_page_first_page",
+            }
+            minute_first_types = {
+                "minute_order_page_first_page",
+                "minute_order_first_page",
+                "ct_minute_order_first_page",
+            }
             updates = 0
 
             if need_rt:
@@ -4899,11 +4923,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 for entry in rt_entries:
                     self._raise_if_stop_requested()
                     page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
-                    is_hearing_start = page_type == "hearing_page" and not previous_hearing
-                    if page_type in hearing_types:
-                        previous_hearing = True
-                    else:
-                        previous_hearing = False
+                    is_hearing_start = page_type in hearing_first_types or (
+                        page_type in {"hearing_page", "rt_body"} and not previous_hearing
+                    )
+                    previous_hearing = page_type in hearing_types
                     if not is_hearing_start:
                         continue
                     if _extract_entry_value(entry, "date"):
@@ -5052,7 +5075,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "Run Classification dates to generate CT_basic_corrected_advanced_corrected_dates.jsonl first."
                 )
             report_types = {"report", "report_page"}
-            form_first_types = {"form_page_first_page", "form_first_page"}
+            form_first_types = {"form_page_first_page", "form_first_page", "ct_form_first_page"}
             updates = 0
 
             if need_rt:
@@ -5202,7 +5225,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             form_lines: list[str] = []
             report_lines: list[str] = []
             report_types = {"report", "report_page"}
-            form_first_types = {"form_page_first_page", "form_first_page"}
+            form_first_types = {"form_page_first_page", "form_first_page", "ct_form_first_page"}
             for entry in basic_entries:
                 self._raise_if_stop_requested()
                 page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
@@ -5220,8 +5243,19 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     report_lines.append(_format_toc_line(name_value, page))
             minute_order_lines: list[str] = []
             hearing_lines: list[str] = []
-            minute_first_types = {"minute_order_first_page", "minute_order_page_first_page"}
-            hearing_first_types = {"hearing_page", "hearing_first_page", "hearing_page_first_page"}
+            minute_first_types = {
+                "minute_order_first_page",
+                "minute_order_page_first_page",
+                "ct_minute_order_first_page",
+                "ct_minute_order",
+            }
+            hearing_first_types = {
+                "hearing_page",
+                "hearing_first_page",
+                "hearing_page_first_page",
+                "rt_body_first_page",
+                "rt_body",
+            }
             for entry in basic_entries:
                 self._raise_if_stop_requested()
                 file_name = _extract_entry_value(entry, "file_name", "filename")
@@ -5501,12 +5535,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 "hearing_page",
                 "hearing_page_first_page",
                 "hearing_page_last_page",
+                "rt_body",
+                "rt_body_first_page",
             }
             minute_types = {
                 "minute_order",
                 "minute_order_first_page",
                 "minute_order_page",
                 "minute_order_page_first_page",
+                "ct_minute_order",
+                "ct_minute_order_first_page",
             }
             index = 0
             total = len(entries)
@@ -5528,8 +5566,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     index += 1
                     while index < total:
                         self._raise_if_stop_requested()
-                        if entry_type == "hearing" and last_type == "hearing_page_last_page":
-                            break
                         next_file, next_type, next_number = entries[index]
                         if entry_type == "hearing" and next_number > split_page:
                             break
@@ -5544,19 +5580,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         last_number = next_number
                         last_type = next_type
                         index += 1
-                        if entry_type == "hearing" and last_type == "hearing_page_last_page":
-                            break
-                    if entry_type == "minute_order" or last_type == "hearing_page_last_page":
-                        self._append_boundary_entry(
-                            entry_type,
-                            file_name,
-                            end_file,
-                            date_by_file,
-                            report_name_by_file,
-                            hearing_boundaries,
-                            report_boundaries,
-                            minutes_boundaries,
-                        )
+                    self._append_boundary_entry(
+                        entry_type,
+                        file_name,
+                        end_file,
+                        date_by_file,
+                        report_name_by_file,
+                        hearing_boundaries,
+                        report_boundaries,
+                        minutes_boundaries,
+                    )
                     continue
                 index += 1
             hearing_path = derived_dir / "hearing_boundaries.json"
@@ -6235,6 +6268,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             "hearing_first_page",
             "hearing_page",
             "hearing_page_last_page",
+            "rt_body",
+            "rt_body_first_page",
         }:
             hearing_boundaries.append(
                 {
@@ -6261,6 +6296,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             "minute_order_first_page",
             "minute_order_page",
             "minute_order_page_first_page",
+            "ct_minute_order",
+            "ct_minute_order_first_page",
         }:
             minutes_boundaries.append(
                 {
