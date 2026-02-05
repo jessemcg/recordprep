@@ -3592,10 +3592,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     def _build_transcript_split_section(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
 
-        title = Gtk.Label(label="Transcript split", xalign=0)
-        title.add_css_class("title-3")
-        box.append(title)
-
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
 
         dropdown = Gtk.DropDown.new_from_strings(
