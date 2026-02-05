@@ -132,6 +132,7 @@ CONFIG_KEY_OVERVIEW_PROMPT = "overview_prompt"
 CONFIG_KEY_RAG_VOYAGE_API_KEY = "rag_voyage_api_key"
 CONFIG_KEY_RAG_VOYAGE_MODEL = "rag_voyage_model"
 CONFIG_KEY_SELECTED_PDFS = "selected_pdfs"
+CONFIG_KEY_RT_CT_SPLIT_PAGE = "rt_ct_split_page"
 TEXT_SOURCE_EMBEDDED = "embedded"
 TEXT_SOURCE_LOCAL_OCR = "local_ocr"
 DEFAULT_TEXT_SOURCE = TEXT_SOURCE_EMBEDDED
@@ -345,6 +346,17 @@ def _read_rt_ct_split_page(root_dir: Path) -> int | None:
 def _read_rt_ct_split_mode(root_dir: Path) -> str:
     manifest = _read_manifest(root_dir)
     return _normalize_rt_ct_split_mode(manifest.get("rt_ct_split_mode"))
+
+
+def _read_rt_ct_split_page_config() -> int | None:
+    config = _read_config()
+    return _normalize_rt_ct_split_page(config.get(CONFIG_KEY_RT_CT_SPLIT_PAGE))
+
+
+def _write_rt_ct_split_page_config(value: int | None) -> None:
+    config = _read_config()
+    config[CONFIG_KEY_RT_CT_SPLIT_PAGE] = value
+    _write_config(config)
 
 
 def _count_text_pages(text_dir: Path) -> int:
@@ -3091,6 +3103,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._rt_ct_split_label: Gtk.Label | None = None
         self._rt_ct_split_dropdown: Gtk.DropDown | None = None
         self._rt_ct_split_entry: Gtk.Entry | None = None
+        self._rt_ct_split_apply_button: Gtk.Button | None = None
         self._rt_ct_split_pending: int | None = None
         self._rt_ct_split_mode_pending: str | None = None
         self._rt_ct_split_updating = False
@@ -3606,10 +3619,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         entry.connect("changed", self._on_rt_ct_split_changed)
         controls.append(entry)
 
+        apply_button = Gtk.Button(label="Set")
+        apply_button.connect("clicked", self._on_rt_ct_split_apply_clicked)
+        controls.append(apply_button)
+
         self._rt_ct_split_dropdown = dropdown
         self._rt_ct_split_spin = None
         self._rt_ct_split_entry = entry
         self._rt_ct_split_label = None
+        self._rt_ct_split_apply_button = apply_button
 
         box.append(controls)
         return box
@@ -3619,7 +3637,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     ) -> None:
         entry = self._rt_ct_split_entry
         dropdown = self._rt_ct_split_dropdown
-        if entry is None or dropdown is None:
+        apply_button = self._rt_ct_split_apply_button
+        if entry is None or dropdown is None or apply_button is None:
             return
         self._rt_ct_split_updating = True
         entry.set_text(str(split_page or ""))
@@ -3628,6 +3647,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self._rt_ct_split_updating = False
         entry.set_sensitive(split_mode == "split")
+        apply_button.set_sensitive(split_mode == "split")
         if split_mode == "split":
             entry.remove_css_class("dim-label")
         else:
@@ -3637,7 +3657,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         root_dir = self._resolve_case_root()
         if root_dir is None or not root_dir.exists():
             pending_mode = self._rt_ct_split_mode_pending or "split"
-            self._set_rt_ct_split_ui(self._rt_ct_split_pending, None, pending_mode)
+            split_page = self._rt_ct_split_pending
+            if split_page is None:
+                split_page = _read_rt_ct_split_page_config()
+            self._set_rt_ct_split_ui(split_page, None, pending_mode)
             return
         split_page = _read_rt_ct_split_page(root_dir)
         split_mode = _read_rt_ct_split_mode(root_dir)
@@ -3714,26 +3737,27 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     def _on_rt_ct_split_changed(self, entry: Gtk.Entry) -> None:
         if self._rt_ct_split_updating:
             return
+        raw = entry.get_text().strip()
+        split_page = int(raw) if raw.isdigit() else None
+        self._rt_ct_split_pending = split_page
+
+    def _on_rt_ct_split_apply_clicked(self, _button: Gtk.Button) -> None:
         if self._pipeline_running:
             self.show_toast("Stop the pipeline before changing the RT/CT split.")
-            root_dir = self._resolve_case_root()
-            current = _read_rt_ct_split_page(root_dir) if root_dir and root_dir.exists() else None
-            total_pages = (
-                _count_text_pages(root_dir / "text_pages")
-                if root_dir and root_dir.exists()
-                else None
-            )
-            mode = _read_rt_ct_split_mode(root_dir) if root_dir and root_dir.exists() else "split"
-            self._set_rt_ct_split_ui(current, total_pages, mode)
+            self._load_rt_ct_split()
+            return
+        entry = self._rt_ct_split_entry
+        if entry is None:
             return
         raw = entry.get_text().strip()
         split_page = int(raw) if raw.isdigit() else None
         root_dir = self._resolve_case_root()
         if root_dir is None or not root_dir.exists():
             self._rt_ct_split_pending = split_page
-            mode = self._rt_ct_split_mode_pending or "split"
+            _write_rt_ct_split_page_config(split_page)
+            pending_mode = self._rt_ct_split_mode_pending or "split"
+            self._set_rt_ct_split_ui(split_page, None, pending_mode)
             return
-        return
         total_pages = _count_text_pages(root_dir / "text_pages")
         if total_pages and split_page is not None:
             if split_page < 1 or split_page > total_pages:
@@ -3749,9 +3773,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 rt_ct_split_page=split_page,
                 rt_ct_split_mode=_read_rt_ct_split_mode(root_dir),
             )
+            _write_rt_ct_split_page_config(split_page)
         except Exception as exc:
             self.show_toast(f"Unable to save RT/CT split: {exc}")
         self._refresh_step_statuses_from_artifacts()
+        self._set_rt_ct_split_ui(
+            _read_rt_ct_split_page(root_dir), total_pages, _read_rt_ct_split_mode(root_dir)
+        )
 
     def _raise_if_stop_requested(self) -> None:
         if self._stop_event.is_set():
