@@ -967,8 +967,15 @@ def _load_classify_basic_entries(classify_path: Path) -> list[tuple[str, str, in
     return entries
 
 
-def _natural_sort_key(path: Path) -> list[object]:
-    parts = re.split(r"(\d+)", path.name)
+def _natural_sort_key(path: Path | str) -> list[object]:
+    if isinstance(path, Path):
+        name = path.name
+    else:
+        name = str(path).strip()
+        if not name:
+            return []
+        name = Path(name).name
+    parts = re.split(r"(\d+)", name)
     key: list[object] = []
     for part in parts:
         if part.isdigit():
@@ -5083,8 +5090,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     date_by_file[file_name] = date_value
             form_lines: list[str] = []
             report_lines: list[str] = []
-            report_types = {"report", "report_page"}
-            form_first_types = {"form_page_first_page", "form_first_page", "ct_form_first_page"}
+            report_types = {
+                "ct_report",
+            }
+            form_first_types = {
+                "ct_form_first_page",
+            }
             for entry in basic_entries:
                 self._raise_if_stop_requested()
                 page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
@@ -5103,16 +5114,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             minute_order_lines: list[str] = []
             hearing_lines: list[str] = []
             minute_first_types = {
-                "minute_order_first_page",
-                "minute_order_page_first_page",
                 "ct_minute_order_first_page",
-                "ct_minute_order",
             }
             hearing_first_types = {
-                "hearing_page",
-                "hearing_first_page",
-                "hearing_page_first_page",
-                "rt_body_first_page",
                 "rt_body",
             }
             for entry in basic_entries:
@@ -5289,7 +5293,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     date_by_file[file_name] = date_value
                 page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
                 name_value = _extract_entry_value(entry, "name", "report_name")
-                if page_type in {"report", "report_page"} and name_value:
+                if page_type in {"ct_report"} and name_value:
                     report_name_by_file[file_name] = name_value
             relevant_report_files: set[str] | None = None
             hearing_boundaries: list[dict[str, str]] = []
@@ -5329,7 +5333,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         current_report_end = None
                         report_sequence_relevant = False
                     continue
-                if page_type not in {"report", "report_page"}:
+                if page_type not in {"ct_report"}:
                     if current_report_start:
                         if report_sequence_relevant:
                             self._append_boundary_entry(
@@ -5385,19 +5389,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     )
 
             hearing_types = {
-                "hearing",
-                "hearing_first_page",
-                "hearing_page",
-                "hearing_page_first_page",
-                "hearing_page_last_page",
                 "rt_body",
-                "rt_body_first_page",
+                "hearing_page_last_page",
             }
             minute_types = {
-                "minute_order",
-                "minute_order_first_page",
-                "minute_order_page",
-                "minute_order_page_first_page",
                 "ct_minute_order",
                 "ct_minute_order_first_page",
             }
