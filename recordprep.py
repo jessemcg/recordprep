@@ -75,14 +75,8 @@ CONFIG_KEY_CLASSIFIER_API_KEY = "classifier_api_key"
 CONFIG_KEY_CLASSIFIER_PROMPT = "classifier_prompt"
 CONFIG_KEY_CLASSIFIER_RT_PROMPT = "classifier_rt_prompt"
 CONFIG_KEY_CLASSIFIER_CT_PROMPT = "classifier_ct_prompt"
-CONFIG_KEY_CLASSIFY_DATES_API_URL = "classify_dates_api_url"
-CONFIG_KEY_CLASSIFY_DATES_MODEL_ID = "classify_dates_model_id"
-CONFIG_KEY_CLASSIFY_DATES_API_KEY = "classify_dates_api_key"
 CONFIG_KEY_CLASSIFY_DATES_HEARING_PROMPT = "classify_dates_hearing_prompt"
 CONFIG_KEY_CLASSIFY_DATES_MINUTE_PROMPT = "classify_dates_minute_prompt"
-CONFIG_KEY_CLASSIFY_NAMES_API_URL = "classify_names_api_url"
-CONFIG_KEY_CLASSIFY_NAMES_MODEL_ID = "classify_names_model_id"
-CONFIG_KEY_CLASSIFY_NAMES_API_KEY = "classify_names_api_key"
 CONFIG_KEY_CLASSIFY_NAMES_REPORT_PROMPT = "classify_names_report_prompt"
 CONFIG_KEY_CLASSIFY_NAMES_FORM_PROMPT = "classify_names_form_prompt"
 CONFIG_KEY_CASE_NAME_API_URL = "case_name_api_url"
@@ -1297,9 +1291,10 @@ def save_advanced_classify_settings(
 
 def load_classify_dates_settings() -> dict[str, str]:
     config = _read_config()
-    api_url = str(config.get(CONFIG_KEY_CLASSIFY_DATES_API_URL, "") or "").strip()
-    model_id = str(config.get(CONFIG_KEY_CLASSIFY_DATES_MODEL_ID, "") or "").strip()
-    api_key = str(config.get(CONFIG_KEY_CLASSIFY_DATES_API_KEY, "") or "").strip()
+    shared = load_classifier_settings()
+    api_url = shared["api_url"]
+    model_id = shared["model_id"]
+    api_key = shared["api_key"]
     hearing_prompt = str(
         config.get(CONFIG_KEY_CLASSIFY_DATES_HEARING_PROMPT, DEFAULT_CLASSIFY_HEARING_DATES_PROMPT)
         or ""
@@ -1318,16 +1313,10 @@ def load_classify_dates_settings() -> dict[str, str]:
 
 
 def save_classify_dates_settings(
-    api_url: str,
-    model_id: str,
-    api_key: str,
     hearing_prompt: str,
     minute_prompt: str,
 ) -> None:
     config = _read_config()
-    config[CONFIG_KEY_CLASSIFY_DATES_API_URL] = api_url or ""
-    config[CONFIG_KEY_CLASSIFY_DATES_MODEL_ID] = model_id or ""
-    config[CONFIG_KEY_CLASSIFY_DATES_API_KEY] = api_key or ""
     config[CONFIG_KEY_CLASSIFY_DATES_HEARING_PROMPT] = (
         hearing_prompt or DEFAULT_CLASSIFY_HEARING_DATES_PROMPT
     )
@@ -1339,9 +1328,10 @@ def save_classify_dates_settings(
 
 def load_classify_names_settings() -> dict[str, str]:
     config = _read_config()
-    api_url = str(config.get(CONFIG_KEY_CLASSIFY_NAMES_API_URL, "") or "").strip()
-    model_id = str(config.get(CONFIG_KEY_CLASSIFY_NAMES_MODEL_ID, "") or "").strip()
-    api_key = str(config.get(CONFIG_KEY_CLASSIFY_NAMES_API_KEY, "") or "").strip()
+    shared = load_classifier_settings()
+    api_url = shared["api_url"]
+    model_id = shared["model_id"]
+    api_key = shared["api_key"]
     report_prompt = str(
         config.get(CONFIG_KEY_CLASSIFY_NAMES_REPORT_PROMPT, DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT)
         or ""
@@ -1359,16 +1349,10 @@ def load_classify_names_settings() -> dict[str, str]:
 
 
 def save_classify_names_settings(
-    api_url: str,
-    model_id: str,
-    api_key: str,
     report_prompt: str,
     form_prompt: str,
 ) -> None:
     config = _read_config()
-    config[CONFIG_KEY_CLASSIFY_NAMES_API_URL] = api_url or ""
-    config[CONFIG_KEY_CLASSIFY_NAMES_MODEL_ID] = model_id or ""
-    config[CONFIG_KEY_CLASSIFY_NAMES_API_KEY] = api_key or ""
     config[CONFIG_KEY_CLASSIFY_NAMES_REPORT_PROMPT] = (
         report_prompt or DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT
     )
@@ -1648,18 +1632,12 @@ class ClassifySettingsWidgets:
 
 @dataclass
 class ClassifyDatesSettingsWidgets:
-    api_url_row: Adw.EntryRow
-    model_row: Adw.EntryRow
-    api_key_row: Adw.PasswordEntryRow
     hearing_prompt_buffer: Gtk.TextBuffer
     minute_prompt_buffer: Gtk.TextBuffer
 
 
 @dataclass
 class ClassifyNamesSettingsWidgets:
-    api_url_row: Adw.EntryRow
-    model_row: Adw.EntryRow
-    api_key_row: Adw.PasswordEntryRow
     report_prompt_buffer: Gtk.TextBuffer
     form_prompt_buffer: Gtk.TextBuffer
 
@@ -2441,26 +2419,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
-        info_label = Gtk.Label(label="Uses Classification dates credentials.", xalign=0)
+        info_label = Gtk.Label(
+            label="Uses Classification basic vision model credentials.",
+            xalign=0,
+        )
         info_label.add_css_class("dim-label")
         page_box.append(info_label)
-
-        credentials_group = Adw.PreferencesGroup(title="Credentials")
-        credentials_group.add_css_class("list-stack")
-        credentials_group.set_hexpand(True)
-        page_box.append(credentials_group)
-
-        api_url_row = Adw.EntryRow(title="API URL")
-        api_url_row.set_text(settings.get("api_url", ""))
-        credentials_group.add(api_url_row)
-
-        model_row = Adw.EntryRow(title="Model ID")
-        model_row.set_text(settings.get("model_id", ""))
-        credentials_group.add(model_row)
-
-        api_key_row = self._build_password_row("API Key")
-        api_key_row.set_text(settings.get("api_key", ""))
-        credentials_group.add(api_key_row)
 
         prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         prompt_section.set_hexpand(True)
@@ -2491,9 +2455,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.set_child(page_box)
 
         self._classify_dates_widgets = ClassifyDatesSettingsWidgets(
-            api_url_row=api_url_row,
-            model_row=model_row,
-            api_key_row=api_key_row,
             hearing_prompt_buffer=hearing_buffer,
             minute_prompt_buffer=minute_buffer,
         )
@@ -2513,26 +2474,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
-        info_label = Gtk.Label(label="Uses Classification names credentials.", xalign=0)
+        info_label = Gtk.Label(
+            label="Uses Classification basic vision model credentials.",
+            xalign=0,
+        )
         info_label.add_css_class("dim-label")
         page_box.append(info_label)
-
-        credentials_group = Adw.PreferencesGroup(title="Credentials")
-        credentials_group.add_css_class("list-stack")
-        credentials_group.set_hexpand(True)
-        page_box.append(credentials_group)
-
-        api_url_row = Adw.EntryRow(title="API URL")
-        api_url_row.set_text(settings.get("api_url", ""))
-        credentials_group.add(api_url_row)
-
-        model_row = Adw.EntryRow(title="Model ID")
-        model_row.set_text(settings.get("model_id", ""))
-        credentials_group.add(model_row)
-
-        api_key_row = self._build_password_row("API Key")
-        api_key_row.set_text(settings.get("api_key", ""))
-        credentials_group.add(api_key_row)
 
         prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         prompt_section.set_hexpand(True)
@@ -2563,9 +2510,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.set_child(page_box)
 
         self._classify_names_widgets = ClassifyNamesSettingsWidgets(
-            api_url_row=api_url_row,
-            model_row=model_row,
-            api_key_row=api_key_row,
             report_prompt_buffer=reports_buffer,
             form_prompt_buffer=forms_buffer,
         )
@@ -2875,17 +2819,11 @@ class SettingsWindow(Adw.ApplicationWindow):
             )
         if classify_dates_widgets:
             save_classify_dates_settings(
-                classify_dates_widgets.api_url_row.get_text().strip(),
-                classify_dates_widgets.model_row.get_text().strip(),
-                classify_dates_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(classify_dates_widgets.hearing_prompt_buffer).strip(),
                 self._prompt_text(classify_dates_widgets.minute_prompt_buffer).strip(),
             )
         if classify_names_widgets:
             save_classify_names_settings(
-                classify_names_widgets.api_url_row.get_text().strip(),
-                classify_names_widgets.model_row.get_text().strip(),
-                classify_names_widgets.api_key_row.get_text().strip(),
                 self._prompt_text(classify_names_widgets.report_prompt_buffer).strip(),
                 self._prompt_text(classify_names_widgets.form_prompt_buffer).strip(),
             )
@@ -4618,13 +4556,21 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise ValueError("Selected PDFs must be in the same folder.")
                 raise ValueError("Choose PDF files or select a saved case first.")
             text_dir = root_dir / "text_pages"
+            image_dir = root_dir / "image_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
+            if not image_dir.exists():
+                raise FileNotFoundError("Run Create files to generate image files first.")
             classification_dir = root_dir / "classification"
             settings = load_classify_dates_settings()
-            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
+            shared_settings = load_classifier_settings()
+            if (
+                not shared_settings["api_url"]
+                or not shared_settings["model_id"]
+                or not shared_settings["api_key"]
+            ):
                 raise ValueError(
-                    "Configure classification dates API URL, model ID, and API key in Settings."
+                    "Configure vision API URL, model ID, and API key in Settings."
                 )
             _split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
@@ -4666,20 +4612,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     file_name = _extract_entry_value(entry, "file_name", "filename")
                     if not file_name:
                         continue
-                    text_path = text_dir / file_name
-                    if not text_path.exists():
-                        raise FileNotFoundError(
-                            f"Missing text file {text_path.name} for classification."
-                        )
-                    response = self._classify_text(
+                    image_path = _image_path_for_filename(file_name, image_dir)
+                    response = self._classify_image(
                         {
-                            "api_url": settings["api_url"],
-                            "model_id": settings["model_id"],
-                            "api_key": settings["api_key"],
+                            "api_url": shared_settings["api_url"],
+                            "model_id": shared_settings["model_id"],
+                            "api_key": shared_settings["api_key"],
                             "prompt": settings["hearing_prompt"],
                         },
                         file_name,
-                        text_path.read_text(encoding="utf-8", errors="ignore"),
+                        image_path,
                     )
                     date_value = _extract_entry_value(response, "date")
                     if date_value:
@@ -4706,20 +4648,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     file_name = _extract_entry_value(entry, "file_name", "filename")
                     if not file_name:
                         continue
-                    text_path = text_dir / file_name
-                    if not text_path.exists():
-                        raise FileNotFoundError(
-                            f"Missing text file {text_path.name} for classification."
-                        )
-                    response = self._classify_text(
+                    image_path = _image_path_for_filename(file_name, image_dir)
+                    response = self._classify_image(
                         {
-                            "api_url": settings["api_url"],
-                            "model_id": settings["model_id"],
-                            "api_key": settings["api_key"],
+                            "api_url": shared_settings["api_url"],
+                            "model_id": shared_settings["model_id"],
+                            "api_key": shared_settings["api_key"],
                             "prompt": settings["minute_prompt"],
                         },
                         file_name,
-                        text_path.read_text(encoding="utf-8", errors="ignore"),
+                        image_path,
                     )
                     date_value = _extract_entry_value(response, "date")
                     if date_value:
@@ -4761,13 +4699,21 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise ValueError("Selected PDFs must be in the same folder.")
                 raise ValueError("Choose PDF files or select a saved case first.")
             text_dir = root_dir / "text_pages"
+            image_dir = root_dir / "image_pages"
             if not text_dir.exists():
                 raise FileNotFoundError("Run Create files to generate text files first.")
+            if not image_dir.exists():
+                raise FileNotFoundError("Run Create files to generate image files first.")
             classification_dir = root_dir / "classification"
             settings = load_classify_names_settings()
-            if not settings["api_url"] or not settings["model_id"] or not settings["api_key"]:
+            shared_settings = load_classifier_settings()
+            if (
+                not shared_settings["api_url"]
+                or not shared_settings["model_id"]
+                or not shared_settings["api_key"]
+            ):
                 raise ValueError(
-                    "Configure classification names API URL, model ID, and API key in Settings."
+                    "Configure vision API URL, model ID, and API key in Settings."
                 )
             split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
@@ -4817,20 +4763,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         file_name = _extract_entry_value(entry, "file_name", "filename")
                         if not file_name:
                             continue
-                        text_path = text_dir / file_name
-                        if not text_path.exists():
-                            raise FileNotFoundError(
-                                f"Missing text file {text_path.name} for classification."
-                            )
-                        response = self._classify_text(
+                        image_path = _image_path_for_filename(file_name, image_dir)
+                        response = self._classify_image(
                             {
-                                "api_url": settings["api_url"],
-                                "model_id": settings["model_id"],
-                                "api_key": settings["api_key"],
+                                "api_url": shared_settings["api_url"],
+                                "model_id": shared_settings["model_id"],
+                                "api_key": shared_settings["api_key"],
                                 "prompt": settings["report_prompt"],
                             },
                             file_name,
-                            text_path.read_text(encoding="utf-8", errors="ignore"),
+                            image_path,
                         )
                         name_value = _extract_entry_value(response, "name", "report_name")
                         if name_value:
@@ -4843,20 +4785,16 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         file_name = _extract_entry_value(entry, "file_name", "filename")
                         if not file_name:
                             continue
-                        text_path = text_dir / file_name
-                        if not text_path.exists():
-                            raise FileNotFoundError(
-                                f"Missing text file {text_path.name} for classification."
-                            )
-                        response = self._classify_text(
+                        image_path = _image_path_for_filename(file_name, image_dir)
+                        response = self._classify_image(
                             {
-                                "api_url": settings["api_url"],
-                                "model_id": settings["model_id"],
-                                "api_key": settings["api_key"],
+                                "api_url": shared_settings["api_url"],
+                                "model_id": shared_settings["model_id"],
+                                "api_key": shared_settings["api_key"],
                                 "prompt": settings["form_prompt"],
                             },
                             file_name,
-                            text_path.read_text(encoding="utf-8", errors="ignore"),
+                            image_path,
                         )
                         name_value = _extract_entry_value(response, "name", "form_name")
                         if name_value:
