@@ -55,8 +55,8 @@ case_bundle/
 - Correct basic classification: fix common page-type gaps.
 - Advanced classification: mark hearing last pages, minute/form first pages.
 - Correct advanced classification: remove consecutive hearing last-page markers.
-- Classification dates: add hearing and minute order dates.
-- Classification names: add report and form names.
+- Classification dates: add hearing and minute order dates (vision model on page images).
+- Classification names: add report and form names (vision model on page images).
 - Build TOC: generate `artifacts/toc.txt`.
 - Correct TOC: remove duplicate minute order dates.
 - Find boundaries: write hearing/report/minute boundaries JSON.
