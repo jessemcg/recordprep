@@ -4541,7 +4541,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     if _maybe_update_page_type(
                         entry,
                         ("rt_body", "hearing_page", "hearing"),
-                        "rt_body_first_page",
+                        "RT_body_first_page",
                         settings["hearing_prompt"],
                         (
                             "first_page",
