@@ -172,10 +172,11 @@ DEFAULT_CLASSIFY_REPORT_NAMES_PROMPT = (
 )
 DEFAULT_ADVANCED_HEARING_PROMPT = (
     "You are reviewing a page labeled RT_body in a legal transcript. "
-    "Determine if this is the last page of the hearing. "
-    "The last page often has wrap-up language, signatures, or the end of dialogue. "
-    "Return JSON with keys: last_page. "
-    "last_page must be yes or no."
+    "Determine if this is the first page of the hearing. "
+    "Ignore page numbers. Look for the court calling the case name or docket number "
+    "and parties announcing their appearances. "
+    "Return JSON with keys: first_page. "
+    "first_page must be yes or no."
 )
 DEFAULT_ADVANCED_MINUTE_PROMPT = (
     "You are reviewing a page labeled CT_minute_order in a legal transcript. "
@@ -2387,7 +2388,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         prompt_section.set_hexpand(True)
         prompt_section.set_vexpand(True)
 
-        hearing_label = Gtk.Label(label="Hearing Last Page Prompt", xalign=0)
+        hearing_label = Gtk.Label(label="Hearing First Page Prompt", xalign=0)
         hearing_label.add_css_class("dim-label")
         prompt_section.append(hearing_label)
         hearing_scroller, hearing_buffer = self._build_prompt_editor(
@@ -4540,13 +4541,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     if _maybe_update_page_type(
                         entry,
                         ("rt_body", "hearing_page", "hearing"),
-                        "hearing_page_last_page",
+                        "hearing_page_first_page",
                         settings["hearing_prompt"],
                         (
-                            "last_page",
-                            "last",
-                            "is_last_page",
-                            "is_last",
+                            "first_page",
+                            "first",
+                            "is_first_page",
+                            "is_first",
                         ),
                     ):
                         updates += 1
@@ -5235,7 +5236,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
             hearing_types = {
                 "rt_body",
-                "hearing_page_last_page",
+                "hearing_page_first_page",
             }
             minute_types = {
                 "ct_minute_order",
@@ -5962,7 +5963,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             "hearing",
             "hearing_first_page",
             "hearing_page",
-            "hearing_page_last_page",
+            "hearing_page_first_page",
             "rt_body",
             "rt_body_first_page",
         }:
