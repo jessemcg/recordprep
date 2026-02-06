@@ -414,7 +414,7 @@ def _load_classify_date_targets(classify_path: Path) -> list[tuple[str, str]]:
     for file_name, page_type, page_number in entries:
         if page_type in {
             "hearing_first_page",
-            "hearing_page_first_page",
+            "rt_body_first_page",
             "minute_order_first_page",
             "minute_order_page_first_page",
             "ct_minute_order_first_page",
@@ -4541,7 +4541,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     if _maybe_update_page_type(
                         entry,
                         ("rt_body", "hearing_page", "hearing"),
-                        "hearing_page_first_page",
+                        "rt_body_first_page",
                         settings["hearing_prompt"],
                         (
                             "first_page",
@@ -4653,13 +4653,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise FileNotFoundError(
                         "No entries found in RT_basic_advanced.jsonl."
                     )
-                previous_rt_body = False
+                hearing_first_types = {
+                    "rt_body_first_page",
+                }
                 for entry in rt_entries:
                     self._raise_if_stop_requested()
                     page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
-                    is_rt_body_start = page_type == "rt_body" and not previous_rt_body
-                    previous_rt_body = page_type == "rt_body"
-                    if not is_rt_body_start:
+                    if page_type not in hearing_first_types:
                         continue
                     if _extract_entry_value(entry, "date"):
                         continue
@@ -5236,7 +5236,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
             hearing_types = {
                 "rt_body",
-                "hearing_page_first_page",
+                "rt_body_first_page",
             }
             minute_types = {
                 "ct_minute_order",
@@ -5963,7 +5963,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             "hearing",
             "hearing_first_page",
             "hearing_page",
-            "hearing_page_first_page",
             "rt_body",
             "rt_body_first_page",
         }:
