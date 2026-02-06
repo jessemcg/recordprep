@@ -4407,6 +4407,39 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     done_rt.add(text_path.name)
                 else:
                     done_ct.add(text_path.name)
+            if need_ct and ct_basic_path.exists():
+                self._raise_if_stop_requested()
+                ct_entries = _load_jsonl_entries(ct_basic_path)
+                if ct_entries:
+                    ct_entries.sort(
+                        key=lambda entry: _natural_sort_key(
+                            _extract_entry_value(entry, "file_name", "filename")
+                        )
+                    )
+                    changed = False
+                    for idx in range(1, len(ct_entries) - 1):
+                        current = ct_entries[idx]
+                        prev_entry = ct_entries[idx - 1]
+                        next_entry = ct_entries[idx + 1]
+                        current_type = _extract_entry_value(
+                            current, "page_type", "pagetype"
+                        ).strip().lower()
+                        prev_type = _extract_entry_value(
+                            prev_entry, "page_type", "pagetype"
+                        ).strip().lower()
+                        next_type = _extract_entry_value(
+                            next_entry, "page_type", "pagetype"
+                        ).strip().lower()
+                        if current_type != "ct_report" and prev_type == "ct_report" and next_type == "ct_report":
+                            normalized = {_normalize_key(key): key for key in current}
+                            target_key = normalized.get("pagetype", "page_type")
+                            current[target_key] = "CT_report"
+                            changed = True
+                    if changed:
+                        with ct_basic_path.open("w", encoding="utf-8") as handle:
+                            for entry in ct_entries:
+                                handle.write(json.dumps(entry))
+                                handle.write("\n")
         except StopRequested:
             success = None
         except Exception as exc:
