@@ -3102,6 +3102,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._attach_step_status(self.step_seven_row)
         self.step_list.append(self.step_seven_row)
 
+        self.step_correct_boundaries_row = Adw.ActionRow(
+            title="Correct boundaries",
+            subtitle="Remove single-page report boundaries unless they are last-minute.",
+        )
+        self.step_correct_boundaries_row.set_activatable(True)
+        self.step_correct_boundaries_row.connect(
+            "activated", self.on_step_correct_boundaries_clicked
+        )
+        self._attach_step_status(self.step_correct_boundaries_row)
+        self.step_list.append(self.step_correct_boundaries_row)
+
         self.step_eight_row = Adw.ActionRow(
             title="Create raw",
             subtitle="Create raw hearing and report text files for summarization.",
@@ -3352,6 +3363,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             (artifacts_dir / "hearing_boundaries.json").exists()
             and (artifacts_dir / "report_boundaries.json").exists()
             and (artifacts_dir / "minutes_boundaries.json").exists(),
+        )
+        _set_if_pending(
+            self.step_correct_boundaries_row,
+            (artifacts_dir / "report_boundaries.json").exists(),
         )
         _set_if_pending(
             self.step_eight_row,
@@ -3738,6 +3753,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ("build_toc", self.step_six_row, self._run_step_six),
             ("correct_toc", self.step_correct_toc_row, self._run_step_correct_toc),
             ("find_boundaries", self.step_seven_row, self._run_step_seven),
+            (
+                "correct_boundaries",
+                self.step_correct_boundaries_row,
+                self._run_step_correct_boundaries,
+            ),
             ("create_raw", self.step_eight_row, self._run_step_eight),
             ("create_optimized", self.step_nine_row, self._run_step_nine),
             ("create_summaries", self.step_ten_row, self._run_step_ten),
@@ -4146,6 +4166,20 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_seven_row.set_sensitive(False)
         self._start_step(self.step_seven_row)
         threading.Thread(target=self._run_step_seven, daemon=True).start()
+
+    def on_step_correct_boundaries_clicked(self, _row: Adw.ActionRow) -> None:
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
+            return
+        self._stop_event.clear()
+        self.stop_button.set_sensitive(True)
+        self.step_correct_boundaries_row.set_sensitive(False)
+        self._start_step(self.step_correct_boundaries_row)
+        threading.Thread(target=self._run_step_correct_boundaries, daemon=True).start()
 
     def on_step_eight_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4901,7 +4935,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 "ct_minute_order_first_page",
             }
             hearing_first_types = {
-                "rt_body",
+                "rt_body_first_page",
             }
             for entry in basic_entries:
                 self._raise_if_stop_requested()
@@ -5172,50 +5206,76 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         minutes_boundaries,
                     )
 
-            hearing_types = {
-                "rt_body",
+            hearing_start_types = {
                 "rt_body_first_page",
             }
-            minute_types = {
-                "ct_minute_order",
+            hearing_body_types = {
+                "rt_body",
+            }
+            minute_start_types = {
                 "ct_minute_order_first_page",
+            }
+            minute_body_types = {
+                "ct_minute_order",
             }
             index = 0
             total = len(entries)
             while index < total:
                 self._raise_if_stop_requested()
                 file_name, page_type, page_number = entries[index]
-                if page_type in hearing_types or page_type in minute_types:
-                    if page_type in hearing_types and page_number > split_page:
+                if page_type in hearing_start_types:
+                    if page_number > split_page:
                         index += 1
                         continue
-                    if page_type in minute_types and page_number <= split_page:
-                        index += 1
-                        continue
-                    expected_types = hearing_types if page_type in hearing_types else minute_types
-                    entry_type = "hearing" if page_type in hearing_types else "minute_order"
                     end_file = file_name
                     last_number = page_number
-                    last_type = page_type
                     index += 1
                     while index < total:
                         self._raise_if_stop_requested()
                         next_file, next_type, next_number = entries[index]
-                        if entry_type == "hearing" and next_number > split_page:
-                            break
-                        if entry_type == "minute_order" and next_number <= split_page:
+                        if next_number > split_page:
                             break
                         if (
-                            next_type not in expected_types
+                            next_type not in hearing_body_types
                             or next_number != last_number + 1
                         ):
                             break
                         end_file = next_file
                         last_number = next_number
-                        last_type = next_type
                         index += 1
                     self._append_boundary_entry(
-                        entry_type,
+                        "hearing",
+                        file_name,
+                        end_file,
+                        date_by_file,
+                        report_name_by_file,
+                        hearing_boundaries,
+                        report_boundaries,
+                        minutes_boundaries,
+                    )
+                    continue
+                if page_type in minute_start_types:
+                    if page_number <= split_page:
+                        index += 1
+                        continue
+                    end_file = file_name
+                    last_number = page_number
+                    index += 1
+                    while index < total:
+                        self._raise_if_stop_requested()
+                        next_file, next_type, next_number = entries[index]
+                        if next_number <= split_page:
+                            break
+                        if (
+                            next_type not in minute_body_types
+                            or next_number != last_number + 1
+                        ):
+                            break
+                        end_file = next_file
+                        last_number = next_number
+                        index += 1
+                    self._append_boundary_entry(
+                        "minute_order",
                         file_name,
                         end_file,
                         date_by_file,
@@ -5267,6 +5327,68 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         finally:
             GLib.idle_add(self.step_seven_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_seven_row, success)
+            GLib.idle_add(self._stop_status_if_idle)
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
+
+    def _run_step_correct_boundaries(self) -> bool:
+        success: bool | None = False
+        try:
+            self._raise_if_stop_requested()
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
+            derived_dir = root_dir / "artifacts"
+            report_path = derived_dir / "report_boundaries.json"
+            if not report_path.exists():
+                raise FileNotFoundError("Run Find boundaries to generate report boundaries first.")
+            entries = _load_json_entries(report_path)
+            if not entries:
+                raise FileNotFoundError("No report boundaries found.")
+            removed = 0
+            filtered: list[dict[str, str]] = []
+            for entry in entries:
+                self._raise_if_stop_requested()
+                start_label = _extract_entry_value(entry, "start_page")
+                end_label = _extract_entry_value(entry, "end_page")
+                start_number = _page_number_from_label(start_label)
+                end_number = _page_number_from_label(end_label)
+                if start_number is None or end_number is None:
+                    is_single = start_label == end_label and bool(start_label)
+                else:
+                    is_single = start_number == end_number
+                report_name = _extract_entry_value(entry, "report_name", "report", "name")
+                if is_single and "last minute" not in report_name.lower():
+                    removed += 1
+                    continue
+                filtered.append(entry)
+            report_path.write_text(
+                json.dumps(filtered, indent=2),
+                encoding="utf-8",
+            )
+        except StopRequested:
+            success = None
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Correct boundaries failed: {exc}")
+        else:
+            success = True
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "correct_boundaries",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
+            GLib.idle_add(
+                self.show_toast,
+                f"Correct boundaries complete. {removed} entries removed.",
+            )
+        finally:
+            GLib.idle_add(self.step_correct_boundaries_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_correct_boundaries_row, success)
             GLib.idle_add(self._stop_status_if_idle)
             GLib.idle_add(self._stop_button_if_idle)
         return success is True
