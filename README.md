@@ -5,6 +5,13 @@
 Record Prep is a GTK4/Libadwaita desktop app that turns OCR'd legal transcript PDFs into a structured
 case bundle with classifications, summaries, and retrieval-ready artifacts for appellate workflows.
 
+## Current state (Feb 6, 2026)
+- Functional GTK4/Libadwaita desktop UI with the full pipeline exposed as step-by-step actions.
+- Pipeline implementation and settings UI live in a single entry point (`recordprep.py`).
+- Settings are stored in `config.json` and cover API URLs, model IDs, keys, and prompts.
+- Local OCR defaults to a llama.cpp server, while remote steps use configurable API providers.
+- RAG output targets VoyageAI embeddings with a Chroma vector store.
+
 ## What it does
 - Imports one or more PDFs (merged in natural sort order).
 - Extracts per-page text and grayscale page images.
@@ -19,6 +26,13 @@ case bundle with classifications, summaries, and retrieval-ready artifacts for a
 - Python 3.13+
 - GTK4/Libadwaita (via `pygobject`)
 - `pdftotext` Python bindings, PyMuPDF, PyPDF, LangChain + Chroma + VoyageAI (for RAG)
+
+## Recommended models
+- OCR model: LightOnOCR-2-1B-Q8_0.gguf via llama.cpp
+- Vision model: qwen3-vl-235b-a22b-instruct via Fireworks API
+- Optimize model: llama-3.3-70b via Cerebras API
+- Summarization model: deepseek-v3p1 via Fireworks API
+- Embeddings model: voyage-law-2 via Voyage API
 
 ## Quick start
 ```bash
