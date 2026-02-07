@@ -2923,6 +2923,198 @@ class TocEditorWindow(Adw.ApplicationWindow):
             self._on_saved(self._toc_path)
 
 
+class TestClassificationWindow(Adw.ApplicationWindow):
+    def __init__(self, app: Adw.Application, parent: "RecordPrepWindow") -> None:
+        super().__init__(application=app, title="Test Classification")
+        self.set_default_size(720, 560)
+        self.set_resizable(True)
+        self._parent = parent
+        self._selected_image_path: Path | None = None
+        self._mode_values: list[str] = []
+        self._running = False
+        self._paned_position_set = False
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.add_css_class("flat")
+        header.set_title_widget(Gtk.Label(label="Test Classification", xalign=0))
+        view.add_top_bar(header)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content.set_margin_top(18)
+        content.set_margin_bottom(12)
+        content.set_margin_start(18)
+        content.set_margin_end(18)
+
+        group = Adw.PreferencesGroup(title="Test settings")
+        group.add_css_class("list-stack")
+        content.append(group)
+
+        options = [
+            ("Basic (RT prompt)", "basic_rt"),
+            ("Basic (CT prompt)", "basic_ct"),
+            ("Advanced (Hearing prompt)", "advanced_hearing"),
+            ("Advanced (Minute prompt)", "advanced_minute"),
+            ("Advanced (Form prompt)", "advanced_form"),
+            ("Dates (Hearing prompt)", "dates_hearing"),
+            ("Dates (Minute prompt)", "dates_minute"),
+            ("Names (Report prompt)", "names_report"),
+            ("Names (Form prompt)", "names_form"),
+        ]
+        labels = [label for label, _value in options]
+        self._mode_values = [value for _label, value in options]
+        model = Gtk.StringList.new(labels)
+        mode_row = Adw.ComboRow(title="Classification step")
+        mode_row.set_model(model)
+        mode_row.set_selected(0)
+        group.add(mode_row)
+        self._mode_row = mode_row
+
+        image_row = Adw.ActionRow(title="Image file")
+        image_row.set_subtitle("Choose a PNG image to classify.")
+        choose_button = Gtk.Button(label="Choose image")
+        choose_button.add_css_class("flat")
+        choose_button.connect("clicked", self._on_choose_image_clicked)
+        image_row.add_suffix(choose_button)
+        group.add(image_row)
+        self._image_row = image_row
+
+        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        paned.set_hexpand(True)
+        paned.set_vexpand(True)
+        paned.set_shrink_start_child(False)
+        paned.set_shrink_end_child(False)
+        paned.set_resize_start_child(True)
+        paned.set_resize_end_child(True)
+        self._paned = paned
+
+        preview_frame = Gtk.Frame()
+        preview_frame.set_margin_top(6)
+        preview_frame.set_margin_bottom(6)
+        preview_frame.set_margin_end(6)
+        preview_frame.set_hexpand(True)
+        preview_frame.set_vexpand(True)
+        preview_picture = Gtk.Picture()
+        preview_picture.set_can_shrink(True)
+        preview_picture.set_hexpand(True)
+        preview_picture.set_vexpand(True)
+        preview_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        preview_frame.set_child(preview_picture)
+        self._preview_picture = preview_picture
+
+        output_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        output_box.set_hexpand(True)
+        output_box.set_vexpand(True)
+
+        action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._run_button = Gtk.Button(label="Run test")
+        self._run_button.add_css_class("suggested-action")
+        self._run_button.add_css_class("flat")
+        self._run_button.connect("clicked", self._on_run_clicked)
+        action_box.append(self._run_button)
+
+        self._status_spinner = Gtk.Spinner()
+        self._status_label = Gtk.Label(label="Idle", xalign=0)
+        action_box.append(self._status_spinner)
+        action_box.append(self._status_label)
+        output_box.append(action_box)
+
+        output_scroller = Gtk.ScrolledWindow()
+        output_scroller.set_hexpand(True)
+        output_scroller.set_vexpand(True)
+        output_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        output_view = Gtk.TextView()
+        output_view.set_monospace(True)
+        output_view.set_wrap_mode(Gtk.WrapMode.NONE)
+        output_view.set_editable(False)
+        output_view.set_cursor_visible(False)
+        output_view.set_vexpand(True)
+        output_view.set_hexpand(True)
+        output_scroller.set_child(output_view)
+        output_box.append(output_scroller)
+        self._output_buffer = output_view.get_buffer()
+
+        paned.set_start_child(preview_frame)
+        paned.set_end_child(output_box)
+        content.append(paned)
+
+        view.set_content(content)
+        self.set_content(view)
+        GLib.idle_add(self._set_initial_paned_position)
+
+    def _set_status(self, message: str, running: bool) -> None:
+        self._status_label.set_text(message)
+        if running:
+            self._status_spinner.start()
+        else:
+            self._status_spinner.stop()
+
+    def _on_choose_image_clicked(self, _button: Gtk.Button) -> None:
+        dialog = Gtk.FileDialog(title="Choose PNG image")
+        file_filter = Gtk.FileFilter()
+        file_filter.add_mime_type("image/png")
+        file_filter.set_name("PNG images")
+        dialog.set_default_filter(file_filter)
+        root_dir = self._parent._resolve_case_root()
+        if root_dir is not None:
+            image_dir = root_dir / "image_pages"
+            if image_dir.exists():
+                dialog.set_initial_folder(Gio.File.new_for_path(str(image_dir)))
+        dialog.open(self, None, self._on_image_chosen)
+
+    def _on_image_chosen(self, dialog: Gtk.FileDialog, result: Gio.AsyncResult) -> None:
+        try:
+            gfile = dialog.open_finish(result)
+        except GLib.Error:
+            return
+        if not isinstance(gfile, Gio.File):
+            return
+        path = gfile.get_path()
+        if not path:
+            return
+        self._selected_image_path = Path(path)
+        self._image_row.set_subtitle(self._selected_image_path.name)
+        self._preview_picture.set_filename(str(self._selected_image_path))
+
+    def _set_initial_paned_position(self) -> bool:
+        if self._paned_position_set:
+            return False
+        width = self._paned.get_allocated_width()
+        if width <= 0:
+            return True
+        self._paned.set_position(width // 2)
+        self._paned_position_set = True
+        return False
+
+    def _on_run_clicked(self, _button: Gtk.Button) -> None:
+        if self._running:
+            return
+        if not self._selected_image_path or not self._selected_image_path.exists():
+            self._set_status("Choose an image first.", False)
+            return
+        selected = self._mode_row.get_selected()
+        if not (0 <= selected < len(self._mode_values)):
+            self._set_status("Choose a classification step.", False)
+            return
+        mode_id = self._mode_values[selected]
+        self._running = True
+        self._run_button.set_sensitive(False)
+        self._set_status("Running...", True)
+
+        def _on_done(output: str, error: str | None) -> None:
+            if error:
+                self._set_status(f"Failed: {error}", False)
+                output = error
+            else:
+                self._set_status("Done", False)
+            self._output_buffer.set_text(output)
+            self._run_button.set_sensitive(True)
+            self._running = False
+
+        self._parent.run_test_classification(mode_id, self._selected_image_path, _on_done)
+
 class RecordPrepWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app, title=APPLICATION_NAME)
@@ -2941,6 +3133,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._rt_ct_split_pending: int | None = None
         self._rt_ct_split_mode_pending: str | None = None
         self._rt_ct_split_updating = False
+        self._test_classification_window: TestClassificationWindow | None = None
 
         header_bar = Adw.HeaderBar()
 
@@ -3165,6 +3358,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     def _setup_menu(self, app: Adw.Application) -> None:
         menu = Gio.Menu()
         menu.append("Edit TOC", "app.edit-toc")
+        menu.append("Test Classification...", "app.test-classification")
         menu.append("Settings", "app.settings")
         self.menu_button.set_menu_model(menu)
 
@@ -3185,6 +3379,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             save_action.connect("activate", self._on_action_save_settings)
             app.add_action(save_action)
 
+        if app.lookup_action("test-classification") is None:
+            test_action = Gio.SimpleAction.new("test-classification", None)
+            test_action.connect("activate", self.on_test_classification)
+            app.add_action(test_action)
+
     def on_settings(self, _action: Gio.SimpleAction, _param: object) -> None:
         if self._settings_window:
             self._settings_window.present()
@@ -3200,6 +3399,119 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     def _on_settings_close_request(self, _window: SettingsWindow) -> bool:
         self._settings_window = None
         return False
+
+    def on_test_classification(self, _action: Gio.SimpleAction, _param: object) -> None:
+        if self._test_classification_window:
+            self._test_classification_window.present()
+            return
+        test_window = TestClassificationWindow(self.get_application(), parent=self)
+        test_window.connect("close-request", self._on_test_classification_close_request)
+        self._test_classification_window = test_window
+        test_window.present()
+
+    def _on_test_classification_close_request(
+        self, _window: TestClassificationWindow
+    ) -> bool:
+        self._test_classification_window = None
+        return False
+
+    def _build_test_classification_settings(self, mode_id: str) -> dict[str, str]:
+        if mode_id == "basic_rt":
+            shared = load_classifier_settings()
+            return {
+                "api_url": shared["api_url"],
+                "model_id": shared["model_id"],
+                "api_key": shared["api_key"],
+                "prompt": shared.get("rt_prompt") or shared.get("prompt"),
+            }
+        if mode_id == "basic_ct":
+            shared = load_classifier_settings()
+            return {
+                "api_url": shared["api_url"],
+                "model_id": shared["model_id"],
+                "api_key": shared["api_key"],
+                "prompt": shared.get("ct_prompt") or shared.get("prompt"),
+            }
+        if mode_id == "advanced_hearing":
+            settings = load_advanced_classify_settings()
+            return {
+                "api_url": settings["api_url"],
+                "model_id": settings["model_id"],
+                "api_key": settings["api_key"],
+                "prompt": settings["hearing_prompt"],
+            }
+        if mode_id == "advanced_minute":
+            settings = load_advanced_classify_settings()
+            return {
+                "api_url": settings["api_url"],
+                "model_id": settings["model_id"],
+                "api_key": settings["api_key"],
+                "prompt": settings["minute_prompt"],
+            }
+        if mode_id == "advanced_form":
+            settings = load_advanced_classify_settings()
+            return {
+                "api_url": settings["api_url"],
+                "model_id": settings["model_id"],
+                "api_key": settings["api_key"],
+                "prompt": settings["form_prompt"],
+            }
+        if mode_id == "dates_hearing":
+            settings = load_classify_dates_settings()
+            return {
+                "api_url": settings["api_url"],
+                "model_id": settings["model_id"],
+                "api_key": settings["api_key"],
+                "prompt": settings["hearing_prompt"],
+            }
+        if mode_id == "dates_minute":
+            settings = load_classify_dates_settings()
+            return {
+                "api_url": settings["api_url"],
+                "model_id": settings["model_id"],
+                "api_key": settings["api_key"],
+                "prompt": settings["minute_prompt"],
+            }
+        if mode_id == "names_report":
+            settings = load_classify_names_settings()
+            return {
+                "api_url": settings["api_url"],
+                "model_id": settings["model_id"],
+                "api_key": settings["api_key"],
+                "prompt": settings["report_prompt"],
+            }
+        if mode_id == "names_form":
+            settings = load_classify_names_settings()
+            return {
+                "api_url": settings["api_url"],
+                "model_id": settings["model_id"],
+                "api_key": settings["api_key"],
+                "prompt": settings["form_prompt"],
+            }
+        raise ValueError(f"Unknown classification mode: {mode_id}")
+
+    def run_test_classification(
+        self,
+        mode_id: str,
+        image_path: Path,
+        on_done: Callable[[str, str | None], None],
+    ) -> None:
+        def _worker() -> None:
+            try:
+                settings = self._build_test_classification_settings(mode_id)
+                if not settings.get("api_url") or not settings.get("model_id"):
+                    raise ValueError("Configure API URL and model ID in Settings.")
+                if not settings.get("prompt"):
+                    raise ValueError("Prompt is empty in Settings.")
+                result = self._classify_image(settings, image_path.name, image_path)
+                output = json.dumps(result, indent=2)
+                GLib.idle_add(on_done, output, None)
+            except StopRequested:
+                GLib.idle_add(on_done, "", "Stopped.")
+            except Exception as exc:
+                GLib.idle_add(on_done, "", str(exc))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_action_save_settings(self, _action: Gio.SimpleAction, _param: object) -> None:
         if not self._settings_window:
