@@ -3170,7 +3170,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         content.set_margin_bottom(24)
         content.set_margin_start(24)
         content.set_margin_end(24)
-        self.toast_overlay.set_child(content)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(content)
+        self.toast_overlay.set_child(scroller)
 
         transcript_section = self._build_transcript_split_section()
         content.append(transcript_section)
@@ -3193,19 +3197,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         content.append(action_box)
 
-        resume_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.resume_button = Gtk.Button(label="Resume")
-        self.resume_button.set_halign(Gtk.Align.START)
-        self.resume_button.connect("clicked", self.on_resume_clicked)
-        resume_box.append(self.resume_button)
-
-        self.reset_pipeline_button = Gtk.Button(label="Reset pipeline")
-        self.reset_pipeline_button.set_halign(Gtk.Align.START)
-        self.reset_pipeline_button.connect("clicked", self.on_reset_pipeline_clicked)
-        resume_box.append(self.reset_pipeline_button)
-
-        content.append(resume_box)
-
         self.step_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self.step_list.add_css_class("boxed-list")
         content.append(self.step_list)
@@ -3214,8 +3205,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Create files",
             subtitle="Generate per-page text and image files for the selected PDFs.",
         )
-        self.step_one_row.set_activatable(True)
-        self.step_one_row.connect("activated", self.on_step_one_clicked)
+        self.step_one_row.set_activatable(False)
+        self._attach_step_controls(
+            "create_files",
+            self.step_one_row,
+            lambda _btn: self.on_step_one_clicked(self.step_one_row),
+        )
         self._attach_step_status(self.step_one_row)
         self.step_list.append(self.step_one_row)
 
@@ -3223,8 +3218,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Strip characters",
             subtitle="Remove non-printing characters from the extracted text files.",
         )
-        self.step_strip_nonstandard_row.set_activatable(True)
-        self.step_strip_nonstandard_row.connect("activated", self.on_step_strip_nonstandard_clicked)
+        self.step_strip_nonstandard_row.set_activatable(False)
+        self._attach_step_controls(
+            "strip_characters",
+            self.step_strip_nonstandard_row,
+            lambda _btn: self.on_step_strip_nonstandard_clicked(self.step_strip_nonstandard_row),
+        )
         self._attach_step_status(self.step_strip_nonstandard_row)
         self.step_list.append(self.step_strip_nonstandard_row)
 
@@ -3232,8 +3231,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Infer case",
             subtitle="Use the first pages to infer the case name and save it.",
         )
-        self.step_infer_case_row.set_activatable(True)
-        self.step_infer_case_row.connect("activated", self.on_step_infer_case_clicked)
+        self.step_infer_case_row.set_activatable(False)
+        self._attach_step_controls(
+            "infer_case",
+            self.step_infer_case_row,
+            lambda _btn: self.on_step_infer_case_clicked(self.step_infer_case_row),
+        )
         self._attach_step_status(self.step_infer_case_row)
         self.step_list.append(self.step_infer_case_row)
 
@@ -3241,8 +3244,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Classification basic",
             subtitle="Create basic classifications for RT and CT pages.",
         )
-        self.step_two_row.set_activatable(True)
-        self.step_two_row.connect("activated", self.on_step_two_clicked)
+        self.step_two_row.set_activatable(False)
+        self._attach_step_controls(
+            "classify_basic",
+            self.step_two_row,
+            lambda _btn: self.on_step_two_clicked(self.step_two_row),
+        )
         self._attach_step_status(self.step_two_row)
         self.step_list.append(self.step_two_row)
 
@@ -3250,8 +3257,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Classification advanced",
             subtitle="Refine hearing, minute order, and form page types.",
         )
-        self.step_advanced_row.set_activatable(True)
-        self.step_advanced_row.connect("activated", self.on_step_advanced_clicked)
+        self.step_advanced_row.set_activatable(False)
+        self._attach_step_controls(
+            "classify_advanced",
+            self.step_advanced_row,
+            lambda _btn: self.on_step_advanced_clicked(self.step_advanced_row),
+        )
         self._attach_step_status(self.step_advanced_row)
         self.step_list.append(self.step_advanced_row)
 
@@ -3259,8 +3270,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Classification dates",
             subtitle="Add hearing and minute order dates to first pages.",
         )
-        self.step_dates_row.set_activatable(True)
-        self.step_dates_row.connect("activated", self.on_step_dates_clicked)
+        self.step_dates_row.set_activatable(False)
+        self._attach_step_controls(
+            "classify_dates",
+            self.step_dates_row,
+            lambda _btn: self.on_step_dates_clicked(self.step_dates_row),
+        )
         self._attach_step_status(self.step_dates_row)
         self.step_list.append(self.step_dates_row)
 
@@ -3268,8 +3283,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Classification names",
             subtitle="Add report and form names to first pages.",
         )
-        self.step_names_row.set_activatable(True)
-        self.step_names_row.connect("activated", self.on_step_names_clicked)
+        self.step_names_row.set_activatable(False)
+        self._attach_step_controls(
+            "classify_names",
+            self.step_names_row,
+            lambda _btn: self.on_step_names_clicked(self.step_names_row),
+        )
         self._attach_step_status(self.step_names_row)
         self.step_list.append(self.step_names_row)
 
@@ -3277,8 +3296,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Build TOC",
             subtitle="Compile a table of contents for forms, reports, orders, and hearings.",
         )
-        self.step_six_row.set_activatable(True)
-        self.step_six_row.connect("activated", self.on_step_six_clicked)
+        self.step_six_row.set_activatable(False)
+        self._attach_step_controls(
+            "build_toc",
+            self.step_six_row,
+            lambda _btn: self.on_step_six_clicked(self.step_six_row),
+        )
         self._attach_step_status(self.step_six_row)
         self.step_list.append(self.step_six_row)
 
@@ -3286,8 +3309,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Correct TOC",
             subtitle="Remove duplicate minute order dates in the TOC.",
         )
-        self.step_correct_toc_row.set_activatable(True)
-        self.step_correct_toc_row.connect("activated", self.on_step_correct_toc_clicked)
+        self.step_correct_toc_row.set_activatable(False)
+        self._attach_step_controls(
+            "correct_toc",
+            self.step_correct_toc_row,
+            lambda _btn: self.on_step_correct_toc_clicked(self.step_correct_toc_row),
+        )
         self._attach_step_status(self.step_correct_toc_row)
         self.step_list.append(self.step_correct_toc_row)
 
@@ -3295,8 +3322,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Find boundaries",
             subtitle="Determine page ranges for hearings, named reports, and dated minute orders.",
         )
-        self.step_seven_row.set_activatable(True)
-        self.step_seven_row.connect("activated", self.on_step_seven_clicked)
+        self.step_seven_row.set_activatable(False)
+        self._attach_step_controls(
+            "find_boundaries",
+            self.step_seven_row,
+            lambda _btn: self.on_step_seven_clicked(self.step_seven_row),
+        )
         self._attach_step_status(self.step_seven_row)
         self.step_list.append(self.step_seven_row)
 
@@ -3304,9 +3335,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Correct boundaries",
             subtitle="Remove single-page report boundaries unless they are last-minute.",
         )
-        self.step_correct_boundaries_row.set_activatable(True)
-        self.step_correct_boundaries_row.connect(
-            "activated", self.on_step_correct_boundaries_clicked
+        self.step_correct_boundaries_row.set_activatable(False)
+        self._attach_step_controls(
+            "correct_boundaries",
+            self.step_correct_boundaries_row,
+            lambda _btn: self.on_step_correct_boundaries_clicked(
+                self.step_correct_boundaries_row
+            ),
         )
         self._attach_step_status(self.step_correct_boundaries_row)
         self.step_list.append(self.step_correct_boundaries_row)
@@ -3315,8 +3350,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Create raw",
             subtitle="Create raw hearing and report text files for summarization.",
         )
-        self.step_eight_row.set_activatable(True)
-        self.step_eight_row.connect("activated", self.on_step_eight_clicked)
+        self.step_eight_row.set_activatable(False)
+        self._attach_step_controls(
+            "create_raw",
+            self.step_eight_row,
+            lambda _btn: self.on_step_eight_clicked(self.step_eight_row),
+        )
         self._attach_step_status(self.step_eight_row)
         self.step_list.append(self.step_eight_row)
 
@@ -3324,8 +3363,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Create optimized",
             subtitle="Prepare optimized hearing and report text for retrieval.",
         )
-        self.step_nine_row.set_activatable(True)
-        self.step_nine_row.connect("activated", self.on_step_nine_clicked)
+        self.step_nine_row.set_activatable(False)
+        self._attach_step_controls(
+            "create_optimized",
+            self.step_nine_row,
+            lambda _btn: self.on_step_nine_clicked(self.step_nine_row),
+        )
         self._attach_step_status(self.step_nine_row)
         self.step_list.append(self.step_nine_row)
 
@@ -3333,8 +3376,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Create summaries",
             subtitle="Summarize hearings, reports, and minute orders into concise paragraphs.",
         )
-        self.step_ten_row.set_activatable(True)
-        self.step_ten_row.connect("activated", self.on_step_ten_clicked)
+        self.step_ten_row.set_activatable(False)
+        self._attach_step_controls(
+            "create_summaries",
+            self.step_ten_row,
+            lambda _btn: self.on_step_ten_clicked(self.step_ten_row),
+        )
         self._attach_step_status(self.step_ten_row)
         self.step_list.append(self.step_ten_row)
 
@@ -3342,8 +3389,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Case overview",
             subtitle="Create a three-paragraph overview for RAG context.",
         )
-        self.step_eleven_row.set_activatable(True)
-        self.step_eleven_row.connect("activated", self.on_step_eleven_clicked)
+        self.step_eleven_row.set_activatable(False)
+        self._attach_step_controls(
+            "case_overview",
+            self.step_eleven_row,
+            lambda _btn: self.on_step_eleven_clicked(self.step_eleven_row),
+        )
         self._attach_step_status(self.step_eleven_row)
         self.step_list.append(self.step_eleven_row)
 
@@ -3351,8 +3402,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             title="Create RAG index",
             subtitle="Build a VoyageAI/Chroma vector store from optimized text.",
         )
-        self.step_twelve_row.set_activatable(True)
-        self.step_twelve_row.connect("activated", self.on_step_twelve_clicked)
+        self.step_twelve_row.set_activatable(False)
+        self._attach_step_controls(
+            "create_rag_index",
+            self.step_twelve_row,
+            lambda _btn: self.on_step_twelve_clicked(self.step_twelve_row),
+        )
         self._attach_step_status(self.step_twelve_row)
         self.step_list.append(self.step_twelve_row)
 
@@ -3585,6 +3640,28 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         row.add_suffix(status_label)
         self._step_status_labels[row] = status_label
 
+    def _attach_step_controls(
+        self,
+        step_id: str,
+        row: Adw.ActionRow,
+        run_one: Callable[[Gtk.Button], None],
+    ) -> None:
+        control_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        run_one_button = Gtk.Button(icon_name="media-playback-start-symbolic")
+        run_one_button.add_css_class("flat")
+        run_one_button.set_tooltip_text("Run this step")
+        run_one_button.connect("clicked", run_one)
+        control_box.append(run_one_button)
+
+        run_from_button = Gtk.Button(icon_name="media-skip-forward-symbolic")
+        run_from_button.add_css_class("flat")
+        run_from_button.set_tooltip_text("Run this and all remaining steps")
+        run_from_button.connect(
+            "clicked", lambda _btn, step=step_id: self.on_run_from_step_clicked(step)
+        )
+        control_box.append(run_from_button)
+        row.add_suffix(control_box)
+
     def _set_step_status(self, row: Adw.ActionRow, status: str) -> None:
         label = self._step_status_labels.get(row)
         if label is not None:
@@ -3607,14 +3684,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             except OSError:
                 return False
 
-        def _set_if_pending(row: Adw.ActionRow, created: bool) -> None:
-            if not created:
-                return
-            label = self._step_status_labels.get(row)
-            if label is None:
-                return
-            if label.get_text() == "Pending":
-                self._set_step_status(row, "Created")
+        def _set_done(row: Adw.ActionRow, done: bool) -> None:
+            self._set_step_status(row, "Done" if done else "Pending")
 
         text_dir = root_dir / "text_pages"
         image_dir = root_dir / "image_pages"
@@ -3622,12 +3693,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         artifacts_dir = root_dir / "artifacts"
         rag_dir = root_dir / "rag"
 
-        _set_if_pending(
+        _set_done(
             self.step_one_row,
             _dir_has_files(text_dir, "*.txt") and _dir_has_files(image_dir, "*.png"),
         )
-        _set_if_pending(self.step_strip_nonstandard_row, _dir_has_files(text_dir, "*.txt"))
-        _set_if_pending(self.step_infer_case_row, (root_dir / "case_name.txt").exists())
+        _set_done(self.step_strip_nonstandard_row, _dir_has_files(text_dir, "*.txt"))
+        _set_done(self.step_infer_case_row, (root_dir / "case_name.txt").exists())
         split_page = _read_rt_ct_split_page(root_dir)
         split_mode = _read_rt_ct_split_mode(root_dir)
         total_pages = _count_text_pages(text_dir)
@@ -3648,61 +3719,61 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 return False
             return need_rt or need_ct
 
-        _set_if_pending(
+        _set_done(
             self.step_two_row,
             _rt_ct_ready(classification_dir / "RT_basic.jsonl", classification_dir / "CT_basic.jsonl"),
         )
-        _set_if_pending(
+        _set_done(
             self.step_advanced_row,
             _rt_ct_ready(
                 classification_dir / "RT_basic_advanced.jsonl",
                 classification_dir / "CT_basic_advanced.jsonl",
             ),
         )
-        _set_if_pending(
+        _set_done(
             self.step_dates_row,
             _rt_ct_ready(
                 classification_dir / "RT_basic_advanced_dates.jsonl",
                 classification_dir / "CT_basic_advanced_dates.jsonl",
             ),
         )
-        _set_if_pending(
+        _set_done(
             self.step_names_row,
             _rt_ct_ready(
                 classification_dir / "RT_basic_advanced_dates_names.jsonl",
                 classification_dir / "CT_basic_advanced_dates_names.jsonl",
             ),
         )
-        _set_if_pending(self.step_six_row, (artifacts_dir / "toc.txt").exists())
-        _set_if_pending(self.step_correct_toc_row, (artifacts_dir / "toc.txt").exists())
-        _set_if_pending(
+        _set_done(self.step_six_row, (artifacts_dir / "toc.txt").exists())
+        _set_done(self.step_correct_toc_row, (artifacts_dir / "toc.txt").exists())
+        _set_done(
             self.step_seven_row,
             (artifacts_dir / "hearing_boundaries.json").exists()
             and (artifacts_dir / "report_boundaries.json").exists()
             and (artifacts_dir / "minutes_boundaries.json").exists(),
         )
-        _set_if_pending(
+        _set_done(
             self.step_correct_boundaries_row,
             (artifacts_dir / "report_boundaries.json").exists(),
         )
-        _set_if_pending(
+        _set_done(
             self.step_eight_row,
             (artifacts_dir / "raw_hearings.txt").exists()
             and (artifacts_dir / "raw_reports.txt").exists(),
         )
-        _set_if_pending(
+        _set_done(
             self.step_nine_row,
             (artifacts_dir / "optimized_hearings.txt").exists()
             and (artifacts_dir / "optimized_reports.txt").exists(),
         )
         summaries_path, reports_path = _summary_output_paths(root_dir)
         minutes_path = _minutes_summary_output_path(root_dir)
-        _set_if_pending(
+        _set_done(
             self.step_ten_row,
             summaries_path.exists() and reports_path.exists() and minutes_path.exists(),
         )
-        _set_if_pending(self.step_eleven_row, (rag_dir / "case_overview.txt").exists())
-        _set_if_pending(
+        _set_done(self.step_eleven_row, (rag_dir / "case_overview.txt").exists())
+        _set_done(
             self.step_twelve_row,
             rag_dir.exists()
             and (rag_dir / "vector_database").exists()
@@ -3710,14 +3781,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
 
     def _finish_step(self, row: Adw.ActionRow, success: bool | None) -> None:
-        if success is None:
-            self._set_step_status(row, "Stopped")
-        else:
-            self._set_step_status(row, "Done" if success else "Failed")
+        self._set_step_status(row, "Done" if success else "Pending")
 
     def _start_step(self, row: Adw.ActionRow) -> None:
         title = row.get_title() or "Working"
-        self._set_step_status(row, "Running")
+        self._set_step_status(row, "Pending")
         self._set_status(f"Working: {title}", True)
 
     def _stop_status(self) -> None:
@@ -3915,6 +3983,20 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         rt_ct_split_page: int | None = None,
     ) -> None:
         try:
+            if pipeline_info:
+                pipeline_info = {
+                    key: value
+                    for key, value in pipeline_info.items()
+                    if key
+                    not in {
+                        "last_completed_step",
+                        "last_failed_step",
+                        "last_completed_at",
+                        "last_failed_at",
+                    }
+                }
+                if not pipeline_info:
+                    pipeline_info = None
             _write_manifest(
                 root_dir,
                 self.selected_pdfs,
@@ -4081,43 +4163,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         _case_name, base_dir = load_case_context()
         return base_dir
 
-    def _resume_start_index(
-        self,
-        steps: list[tuple[str, Adw.ActionRow, Callable[[], bool]]],
-        root_dir: Path,
-    ) -> int:
-        manifest = _read_manifest(root_dir)
-        pipeline = manifest.get("pipeline") if isinstance(manifest, dict) else None
-        pipeline = pipeline if isinstance(pipeline, dict) else {}
-        last_failed = pipeline.get("last_failed_step")
-        last_completed = pipeline.get("last_completed_step")
-        step_ids = [step_id for step_id, _row, _handler in steps]
-        if last_failed == "classify":
-            last_failed = "classify_basic"
-        if last_completed == "classify":
-            last_completed = "classify_names"
-        if last_failed == "classify_filter":
-            last_failed = "classify_advanced"
-        if last_completed == "classify_filter":
-            last_completed = "classify_advanced"
-        if last_failed == "correct_basic":
-            last_failed = "classify_advanced"
-        if last_completed == "correct_basic":
-            last_completed = "classify_advanced"
-        if last_failed == "classify_advanced_corrected":
-            last_failed = "classify_dates"
-        if last_completed == "classify_advanced_corrected":
-            last_completed = "classify_dates"
-        if last_failed == "classify_further":
-            last_failed = "classify_dates"
-        if last_completed == "classify_further":
-            last_completed = "classify_names"
-        if isinstance(last_failed, str) and last_failed in step_ids:
-            return step_ids.index(last_failed)
-        if isinstance(last_completed, str) and last_completed in step_ids:
-            return step_ids.index(last_completed) + 1
-        return 0
-
     def on_run_all_clicked(self, _button: Gtk.Button) -> None:
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
@@ -4129,33 +4174,36 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._pipeline_running = True
         self.run_all_button.set_sensitive(False)
         self.stop_button.set_sensitive(True)
-        self.resume_button.set_sensitive(False)
         self.step_list.set_sensitive(False)
         threading.Thread(target=self._run_all_steps, daemon=True).start()
 
-    def on_resume_clicked(self, _button: Gtk.Button) -> None:
+    def on_run_from_step_clicked(self, step_id: str) -> None:
         if self._pipeline_running:
             self.show_toast("Pipeline already running.")
             return
-        root_dir = self._resolve_case_root()
-        if root_dir is None:
-            if self.selected_pdfs:
-                self.show_toast("Selected PDFs must be in the same folder.")
-            else:
-                self.show_toast("Choose PDF files or select a saved case first.")
-            return
         steps = self._pipeline_steps()
-        start_index = self._resume_start_index(steps, root_dir)
-        if start_index >= len(steps):
-            self.show_toast("All steps already complete.")
+        step_ids = [step for step, _row, _handler in steps]
+        if step_id not in step_ids:
+            self.show_toast("Unknown step.")
             return
-        for _step_id, row, _handler in steps[:start_index]:
-            self._set_step_status(row, "Done")
+        if step_id == "create_files":
+            if not self.selected_pdfs:
+                self.show_toast("Choose PDF files first.")
+                return
+        else:
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    self.show_toast("Selected PDFs must be in the same folder.")
+                else:
+                    self.show_toast("Choose PDF files or select a saved case first.")
+                return
+        start_index = step_ids.index(step_id)
+        root_dir = self._resolve_case_root()
         self._stop_event.clear()
         self._pipeline_running = True
         self.run_all_button.set_sensitive(False)
         self.stop_button.set_sensitive(True)
-        self.resume_button.set_sensitive(False)
         self.step_list.set_sensitive(False)
         threading.Thread(
             target=self._run_steps_from_index,
@@ -4163,44 +4211,45 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             daemon=True,
         ).start()
 
-    def on_reset_pipeline_clicked(self, _button: Gtk.Button) -> None:
+    def _launch_single_step(
+        self, row: Adw.ActionRow, handler: Callable[[], bool]
+    ) -> None:
         if self._pipeline_running:
-            self.show_toast("Stop the pipeline before resetting state.")
+            self.show_toast("Pipeline already running.")
             return
-        root_dir = self._resolve_case_root()
-        if root_dir is None:
-            if self.selected_pdfs:
-                self.show_toast("Selected PDFs must be in the same folder.")
-            else:
-                self.show_toast("Choose PDF files or select a saved case first.")
-            return
+        self._stop_event.clear()
+        self._pipeline_running = True
+        self.run_all_button.set_sensitive(False)
+        self.stop_button.set_sensitive(True)
+        self.step_list.set_sensitive(False)
+        row.set_sensitive(False)
+        self._start_step(row)
+        threading.Thread(
+            target=self._run_single_step_thread,
+            args=(handler,),
+            daemon=True,
+        ).start()
+
+    def _run_single_step_thread(self, handler: Callable[[], bool]) -> None:
         try:
-            _write_manifest(
-                root_dir,
-                self.selected_pdfs,
-                pipeline_info={
-                    "last_completed_step": None,
-                    "last_failed_step": None,
-                    "last_completed_at": None,
-                    "last_failed_at": None,
-                },
-            )
-        except Exception as exc:
-            self.show_toast(f"Unable to reset pipeline state: {exc}")
-            return
-        self._reset_step_statuses()
+            handler()
+        finally:
+            GLib.idle_add(self._finish_single_step)
+
+    def _finish_single_step(self) -> None:
+        self._pipeline_running = False
+        self.run_all_button.set_sensitive(True)
+        self.stop_button.set_sensitive(False)
+        self.step_list.set_sensitive(True)
+        self._stop_status()
+        self._update_toc_button()
         self._refresh_step_statuses_from_artifacts()
-        self.show_toast("Pipeline state reset.")
 
     def on_step_one_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
             self.show_toast("Choose PDF files first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_one_row.set_sensitive(False)
-        self._start_step(self.step_one_row)
-        threading.Thread(target=self._run_step_one, daemon=True).start()
+        self._launch_single_step(self.step_one_row, self._run_step_one)
 
     def on_step_strip_nonstandard_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4210,11 +4259,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_strip_nonstandard_row.set_sensitive(False)
-        self._start_step(self.step_strip_nonstandard_row)
-        threading.Thread(target=self._run_step_strip_nonstandard, daemon=True).start()
+        self._launch_single_step(self.step_strip_nonstandard_row, self._run_step_strip_nonstandard)
 
     def on_step_infer_case_clicked(self, _row: Adw.ActionRow) -> None:
         base_dir = self._resolve_case_base()
@@ -4224,11 +4269,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_infer_case_row.set_sensitive(False)
-        self._start_step(self.step_infer_case_row)
-        threading.Thread(target=self._run_step_infer_case, daemon=True).start()
+        self._launch_single_step(self.step_infer_case_row, self._run_step_infer_case)
 
     def _run_step_one(self) -> bool:
         success: bool | None = False
@@ -4401,11 +4442,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_two_row.set_sensitive(False)
-        self._start_step(self.step_two_row)
-        threading.Thread(target=self._run_step_two, daemon=True).start()
+        self._launch_single_step(self.step_two_row, self._run_step_two)
 
     def on_step_advanced_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4415,11 +4452,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_advanced_row.set_sensitive(False)
-        self._start_step(self.step_advanced_row)
-        threading.Thread(target=self._run_step_advanced, daemon=True).start()
+        self._launch_single_step(self.step_advanced_row, self._run_step_advanced)
 
     def on_step_dates_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4429,11 +4462,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_dates_row.set_sensitive(False)
-        self._start_step(self.step_dates_row)
-        threading.Thread(target=self._run_step_dates, daemon=True).start()
+        self._launch_single_step(self.step_dates_row, self._run_step_dates)
 
     def on_step_names_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4443,11 +4472,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_names_row.set_sensitive(False)
-        self._start_step(self.step_names_row)
-        threading.Thread(target=self._run_step_names, daemon=True).start()
+        self._launch_single_step(self.step_names_row, self._run_step_names)
 
     def on_step_six_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4457,11 +4482,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_six_row.set_sensitive(False)
-        self._start_step(self.step_six_row)
-        threading.Thread(target=self._run_step_six, daemon=True).start()
+        self._launch_single_step(self.step_six_row, self._run_step_six)
 
     def on_step_correct_toc_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4471,11 +4492,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_correct_toc_row.set_sensitive(False)
-        self._start_step(self.step_correct_toc_row)
-        threading.Thread(target=self._run_step_correct_toc, daemon=True).start()
+        self._launch_single_step(self.step_correct_toc_row, self._run_step_correct_toc)
 
     def on_step_seven_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4485,11 +4502,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_seven_row.set_sensitive(False)
-        self._start_step(self.step_seven_row)
-        threading.Thread(target=self._run_step_seven, daemon=True).start()
+        self._launch_single_step(self.step_seven_row, self._run_step_seven)
 
     def on_step_correct_boundaries_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4499,11 +4512,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_correct_boundaries_row.set_sensitive(False)
-        self._start_step(self.step_correct_boundaries_row)
-        threading.Thread(target=self._run_step_correct_boundaries, daemon=True).start()
+        self._launch_single_step(
+            self.step_correct_boundaries_row, self._run_step_correct_boundaries
+        )
 
     def on_step_eight_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4513,11 +4524,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_eight_row.set_sensitive(False)
-        self._start_step(self.step_eight_row)
-        threading.Thread(target=self._run_step_eight, daemon=True).start()
+        self._launch_single_step(self.step_eight_row, self._run_step_eight)
 
     def on_step_nine_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4527,11 +4534,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_nine_row.set_sensitive(False)
-        self._start_step(self.step_nine_row)
-        threading.Thread(target=self._run_step_nine, daemon=True).start()
+        self._launch_single_step(self.step_nine_row, self._run_step_nine)
 
     def on_step_ten_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4541,11 +4544,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_ten_row.set_sensitive(False)
-        self._start_step(self.step_ten_row)
-        threading.Thread(target=self._run_step_ten, daemon=True).start()
+        self._launch_single_step(self.step_ten_row, self._run_step_ten)
 
     def on_step_eleven_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4555,11 +4554,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_eleven_row.set_sensitive(False)
-        self._start_step(self.step_eleven_row)
-        threading.Thread(target=self._run_step_eleven, daemon=True).start()
+        self._launch_single_step(self.step_eleven_row, self._run_step_eleven)
 
     def on_step_twelve_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -4569,11 +4564,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             else:
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
-        self._stop_event.clear()
-        self.stop_button.set_sensitive(True)
-        self.step_twelve_row.set_sensitive(False)
-        self._start_step(self.step_twelve_row)
-        threading.Thread(target=self._run_step_twelve, daemon=True).start()
+        self._launch_single_step(self.step_twelve_row, self._run_step_twelve)
 
     def _run_all_steps(self) -> None:
         root_dir = self._resolve_case_root()
@@ -4582,29 +4573,19 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     def _run_steps_from_index(self, start_index: int, root_dir: Path | None) -> None:
         steps = self._pipeline_steps()
         success = True
-        failed_step_id: str | None = None
-        current_step_id: str | None = None
         try:
             for step_id, row, handler in steps[start_index:]:
                 self._raise_if_stop_requested()
-                current_step_id = step_id
                 GLib.idle_add(self._start_step, row)
                 if not handler():
                     success = False
-                    failed_step_id = step_id
                     break
         except StopRequested:
             success = False
-            if current_step_id and not failed_step_id:
-                failed_step_id = current_step_id
         except Exception as exc:
             success = False
-            if current_step_id and not failed_step_id:
-                failed_step_id = current_step_id
             GLib.idle_add(self.show_toast, f"Pipeline failed: {exc}")
         finally:
-            if failed_step_id and root_dir and root_dir.exists():
-                self._safe_update_manifest(root_dir, {"last_failed_step": failed_step_id})
             GLib.idle_add(self._finish_run_all, success)
 
     def _finish_run_all(self, success: bool) -> None:
@@ -4613,10 +4594,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._pipeline_running = False
         self.run_all_button.set_sensitive(True)
         self.stop_button.set_sensitive(False)
-        self.resume_button.set_sensitive(True)
         self.step_list.set_sensitive(True)
         self._stop_status()
         self._update_toc_button()
+        self._refresh_step_statuses_from_artifacts()
         if stop_requested:
             self.show_toast("Pipeline stopped.")
         elif success:
