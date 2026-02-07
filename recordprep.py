@@ -4672,11 +4672,24 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     if not need_ct or text_path.name in done_ct:
                         continue
                 image_path = _image_path_for_filename(text_path.name, image_dir)
-                entry = self._classify_image(
-                    basic_rt_settings if is_rt else basic_ct_settings,
-                    text_path.name,
-                    image_path,
-                )
+                entry: dict[str, str] = {}
+                page_type = ""
+                max_attempts = 3
+                for attempt in range(1, max_attempts + 1):
+                    self._raise_if_stop_requested()
+                    entry = self._classify_image(
+                        basic_rt_settings if is_rt else basic_ct_settings,
+                        text_path.name,
+                        image_path,
+                    )
+                    page_type = _extract_entry_value(entry, "page_type", "pagetype").strip()
+                    if page_type:
+                        break
+                if not page_type:
+                    raise RuntimeError(
+                        f"Classification basic returned blank page_type for {text_path.name} "
+                        f"after {max_attempts} attempts."
+                    )
                 target_path = rt_basic_path if is_rt else ct_basic_path
                 with target_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(entry))
