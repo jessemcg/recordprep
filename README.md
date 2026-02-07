@@ -44,6 +44,7 @@ uv run recordprep.py
 2. Click the list-add button to select one or more PDFs from the same folder.
 3. Run individual steps or click "Run all steps".
 4. Use the menu button to open Settings and configure API endpoints, models, keys, and prompts.
+5. Use the menu button to open "Test Classification" for a single-image prompt run with a live preview.
 
 ## Output layout
 A `case_bundle/` folder is created next to the selected PDFs (or reused if already present):
