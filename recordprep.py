@@ -370,8 +370,6 @@ def _resolve_rt_ct_split(root_dir: Path, text_dir: Path) -> tuple[int, int, bool
     split_page = _read_rt_ct_split_page(root_dir)
     if split_page is None:
         raise ValueError("Set the RT end page number before running classification.")
-    if total_pages and (split_page < 1 or split_page > total_pages):
-        raise ValueError(f"RT end page must be between 1 and {total_pages}.")
     need_rt = split_page >= 1
     need_ct = total_pages > 0 and split_page < total_pages
     return split_page, total_pages, need_rt, need_ct, split_mode
@@ -2940,7 +2938,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._rt_ct_split_label: Gtk.Label | None = None
         self._rt_ct_split_dropdown: Gtk.DropDown | None = None
         self._rt_ct_split_entry: Gtk.Entry | None = None
-        self._rt_ct_split_apply_button: Gtk.Button | None = None
         self._rt_ct_split_pending: int | None = None
         self._rt_ct_split_mode_pending: str | None = None
         self._rt_ct_split_updating = False
@@ -3440,15 +3437,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         entry.connect("changed", self._on_rt_ct_split_changed)
         controls.append(entry)
 
-        apply_button = Gtk.Button(label="Set")
-        apply_button.connect("clicked", self._on_rt_ct_split_apply_clicked)
-        controls.append(apply_button)
-
         self._rt_ct_split_dropdown = dropdown
         self._rt_ct_split_spin = None
         self._rt_ct_split_entry = entry
         self._rt_ct_split_label = None
-        self._rt_ct_split_apply_button = apply_button
 
         box.append(controls)
         return box
@@ -3458,8 +3450,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
     ) -> None:
         entry = self._rt_ct_split_entry
         dropdown = self._rt_ct_split_dropdown
-        apply_button = self._rt_ct_split_apply_button
-        if entry is None or dropdown is None or apply_button is None:
+        if entry is None or dropdown is None:
             return
         self._rt_ct_split_updating = True
         entry.set_text(str(split_page or ""))
@@ -3468,7 +3459,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         )
         self._rt_ct_split_updating = False
         entry.set_sensitive(split_mode == "split")
-        apply_button.set_sensitive(split_mode == "split")
         if split_mode == "split":
             entry.remove_css_class("dim-label")
         else:
@@ -3561,17 +3551,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         raw = entry.get_text().strip()
         split_page = int(raw) if raw.isdigit() else None
         self._rt_ct_split_pending = split_page
-
-    def _on_rt_ct_split_apply_clicked(self, _button: Gtk.Button) -> None:
         if self._pipeline_running:
-            self.show_toast("Stop the pipeline before changing the RT/CT split.")
-            self._load_rt_ct_split()
             return
-        entry = self._rt_ct_split_entry
-        if entry is None:
-            return
-        raw = entry.get_text().strip()
-        split_page = int(raw) if raw.isdigit() else None
         root_dir = self._resolve_case_root()
         if root_dir is None or not root_dir.exists():
             self._rt_ct_split_pending = split_page
@@ -3579,14 +3560,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             pending_mode = self._rt_ct_split_mode_pending or "split"
             self._set_rt_ct_split_ui(split_page, None, pending_mode)
             return
-        total_pages = _count_text_pages(root_dir / "text_pages")
-        if total_pages and split_page is not None:
-            if split_page < 1 or split_page > total_pages:
-                self.show_toast(f"RT end page must be between 1 and {total_pages}.")
-                current = _read_rt_ct_split_page(root_dir)
-                mode = _read_rt_ct_split_mode(root_dir)
-                self._set_rt_ct_split_ui(current, total_pages, mode)
-                return
         try:
             _write_manifest(
                 root_dir,
@@ -3599,7 +3572,9 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self.show_toast(f"Unable to save RT/CT split: {exc}")
         self._refresh_step_statuses_from_artifacts()
         self._set_rt_ct_split_ui(
-            _read_rt_ct_split_page(root_dir), total_pages, _read_rt_ct_split_mode(root_dir)
+            _read_rt_ct_split_page(root_dir),
+            _count_text_pages(root_dir / "text_pages"),
+            _read_rt_ct_split_mode(root_dir),
         )
 
     def _raise_if_stop_requested(self) -> None:
