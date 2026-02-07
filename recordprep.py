@@ -3191,12 +3191,20 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.stop_button.connect("clicked", self.on_stop_clicked)
         action_box.append(self.stop_button)
 
+        content.append(action_box)
+
+        resume_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.resume_button = Gtk.Button(label="Resume")
         self.resume_button.set_halign(Gtk.Align.START)
         self.resume_button.connect("clicked", self.on_resume_clicked)
-        action_box.append(self.resume_button)
+        resume_box.append(self.resume_button)
 
-        content.append(action_box)
+        self.reset_pipeline_button = Gtk.Button(label="Reset pipeline")
+        self.reset_pipeline_button.set_halign(Gtk.Align.START)
+        self.reset_pipeline_button.connect("clicked", self.on_reset_pipeline_clicked)
+        resume_box.append(self.reset_pipeline_button)
+
+        content.append(resume_box)
 
         self.step_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self.step_list.add_css_class("boxed-list")
@@ -3730,7 +3738,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         dropdown = Gtk.DropDown.new_from_strings(
             [
-                "Split RT then CT",
+                "RT/CT Split",
                 "Reporter's transcript only",
                 "Clerk's transcript only",
             ]
@@ -4154,6 +4162,35 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             args=(start_index, root_dir),
             daemon=True,
         ).start()
+
+    def on_reset_pipeline_clicked(self, _button: Gtk.Button) -> None:
+        if self._pipeline_running:
+            self.show_toast("Stop the pipeline before resetting state.")
+            return
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
+            return
+        try:
+            _write_manifest(
+                root_dir,
+                self.selected_pdfs,
+                pipeline_info={
+                    "last_completed_step": None,
+                    "last_failed_step": None,
+                    "last_completed_at": None,
+                    "last_failed_at": None,
+                },
+            )
+        except Exception as exc:
+            self.show_toast(f"Unable to reset pipeline state: {exc}")
+            return
+        self._reset_step_statuses()
+        self._refresh_step_statuses_from_artifacts()
+        self.show_toast("Pipeline state reset.")
 
     def on_step_one_clicked(self, _row: Adw.ActionRow) -> None:
         if not self.selected_pdfs:
