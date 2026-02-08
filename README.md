@@ -58,7 +58,6 @@ case_bundle/
   artifacts/            # toc.txt, boundary json, raw/optimized text
   summaries/            # hearings_sum_<case>.txt, reports_sum_<case>.txt, minutes_sum_<case>.txt (or summarized_*.txt)
   rag/                  # case_overview.txt, vector_database/
-  checkpoints/          # resume data for optimize/summarize
   temp/                 # merged.pdf (when multiple PDFs are selected)
 ```
 

@@ -209,7 +209,9 @@ DEFAULT_OPTIMIZE_HEARINGS_PROMPT = (
     "Use the exact words from the transcript. "
     "Organize the output into paragraphs of about five sentences each. "
     "Each paragraph must be on a single line and separated by a blank line. "
-    "Each paragraph must begin with 'Hearing date: <date>.' followed by a space, "
+    "Each paragraph must begin with 'Hearing date: <date>.' followed by a space. "
+    "Use the hearing date provided to you in the input header; do not infer or copy "
+    "dates from the transcript header or footer. "
     "then label each speaker before their dialogue using sentence case "
     "(for example, 'Ms. Smith speaking: ...'). "
     "The transcript may be all caps; convert dialogue to normal sentence case "
@@ -538,40 +540,6 @@ def _load_jsonl_file_names(path: Path) -> set[str]:
         if file_name:
             file_names.add(file_name)
     return file_names
-
-
-def _load_indexed_jsonl(path: Path) -> dict[int, str]:
-    entries: dict[int, str] = {}
-    if not path.exists():
-        return entries
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            index_value = payload.get("index")
-            try:
-                index = int(index_value)
-            except (TypeError, ValueError):
-                continue
-            text = payload.get("text")
-            entries[index] = str(text) if text is not None else ""
-    return entries
-
-
-def _append_indexed_jsonl(path: Path, index: int, text: str, label: str | None = None) -> None:
-    payload: dict[str, Any] = {"index": index, "text": text}
-    if label:
-        payload["label"] = label
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload))
-        handle.write("\n")
 
 
 def _load_json_entries(path: Path) -> list[dict[str, Any]]:
@@ -965,12 +933,6 @@ def _ensure_case_bundle_dirs(base_dir: Path) -> tuple[Path, Path, Path]:
     text_dir.mkdir(parents=True, exist_ok=True)
     image_pages_dir.mkdir(parents=True, exist_ok=True)
     return root, text_dir, image_pages_dir
-
-
-def _checkpoint_dir(root_dir: Path) -> Path:
-    path = root_dir / "checkpoints"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def _retry_after_seconds(error: urllib.error.HTTPError) -> float | None:
@@ -5790,14 +5752,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             if not hearing_sections and not report_sections:
                 raise FileNotFoundError("No hearing/report sections found in raw files.")
 
-            checkpoint_dir = _checkpoint_dir(root_dir)
-            hearing_checkpoint_path = checkpoint_dir / "optimize_hearings.jsonl"
-            report_checkpoint_path = checkpoint_dir / "optimize_reports.jsonl"
-            hearing_checkpoint = _load_indexed_jsonl(hearing_checkpoint_path)
-            report_checkpoint = _load_indexed_jsonl(report_checkpoint_path)
-
             optimized_hearings: list[str] = []
-            hearing_index = 0
             for label, content in hearing_sections:
                 self._raise_if_stop_requested()
                 if not content:
@@ -5808,27 +5763,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 chunks = _chunk_sentences(sentences, 3500)
                 if not chunks:
                     continue
-                needs_work = any(
-                    (hearing_index + offset) not in hearing_checkpoint
-                    for offset in range(len(chunks))
+                attorney_excerpt = _chunk_sentences(sentences, 2000)[0]
+                attorney_info = self._request_plain_text(
+                    {
+                        "api_url": settings["api_url"],
+                        "model_id": settings["model_id"],
+                        "api_key": settings["api_key"],
+                        "prompt": attorneys_prompt,
+                    },
+                    attorney_excerpt,
                 )
-                attorney_info = ""
-                if needs_work:
-                    attorney_excerpt = _chunk_sentences(sentences, 2000)[0]
-                    attorney_info = self._request_plain_text(
-                        {
-                            "api_url": settings["api_url"],
-                            "model_id": settings["model_id"],
-                            "api_key": settings["api_key"],
-                            "prompt": attorneys_prompt,
-                        },
-                        attorney_excerpt,
-                    )
-                for offset, chunk in enumerate(chunks):
+                for chunk in chunks:
                     self._raise_if_stop_requested()
-                    index = hearing_index + offset
-                    if index in hearing_checkpoint:
-                        continue
                     payload = f"Hearing date: {label}\nAttorney info: {attorney_info}\nTranscript:\n{chunk}"
                     response = self._request_plain_text(
                         {
@@ -5840,18 +5786,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         payload,
                     )
                     cleaned_response = response.strip() if response else ""
-                    hearing_checkpoint[index] = cleaned_response
-                    _append_indexed_jsonl(hearing_checkpoint_path, index, cleaned_response, label=label)
-                hearing_index += len(chunks)
-
-            for index in range(hearing_index):
-                self._raise_if_stop_requested()
-                response_text = hearing_checkpoint.get(index, "")
-                if response_text:
-                    optimized_hearings.append(response_text)
+                    if cleaned_response:
+                        optimized_hearings.append(cleaned_response)
 
             optimized_reports: list[str] = []
-            report_index = 0
             for label, content in report_sections:
                 self._raise_if_stop_requested()
                 if not content:
@@ -5862,11 +5800,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 chunks = _chunk_sentences(sentences, 3500)
                 if not chunks:
                     continue
-                for offset, chunk in enumerate(chunks):
+                for chunk in chunks:
                     self._raise_if_stop_requested()
-                    index = report_index + offset
-                    if index in report_checkpoint:
-                        continue
                     response = self._request_plain_text(
                         {
                             "api_url": settings["api_url"],
@@ -5877,15 +5812,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         chunk,
                     )
                     cleaned_response = response.strip() if response else ""
-                    report_checkpoint[index] = cleaned_response
-                    _append_indexed_jsonl(report_checkpoint_path, index, cleaned_response, label=label)
-                report_index += len(chunks)
-
-            for index in range(report_index):
-                self._raise_if_stop_requested()
-                response_text = report_checkpoint.get(index, "")
-                if response_text:
-                    optimized_reports.append(response_text)
+                    if cleaned_response:
+                        optimized_reports.append(cleaned_response)
 
             (artifacts_dir / "optimized_hearings.txt").write_text(
                 _collapse_blank_lines("\n\n".join(optimized_hearings)),
@@ -5951,14 +5879,6 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 except ValueError:
                     chunk_size = DEFAULT_SUMMARIZE_CHUNK_SIZE
 
-            checkpoint_dir = _checkpoint_dir(root_dir)
-            hearing_checkpoint_path = checkpoint_dir / "summarize_hearings.jsonl"
-            report_checkpoint_path = checkpoint_dir / "summarize_reports.jsonl"
-            minutes_checkpoint_path = checkpoint_dir / "summarize_minutes.jsonl"
-            hearing_checkpoint = _load_indexed_jsonl(hearing_checkpoint_path)
-            report_checkpoint = _load_indexed_jsonl(report_checkpoint_path)
-            minutes_checkpoint = _load_indexed_jsonl(minutes_checkpoint_path)
-
             case_name, _root_dir = load_case_context()
             display_case_name = case_name.replace("_", " ") if case_name else ""
             summary_hearings: list[str] = []
@@ -5988,14 +5908,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     _remove_standalone_date_lines(_remove_hearing_date_mentions(cleaned))
                 )
 
-            hearing_chunk_index = 0
+            hearing_responses: list[str] = []
             for date_value, paragraphs in hearing_groups:
                 self._raise_if_stop_requested()
                 for chunk in _chunk_paragraphs(paragraphs, chunk_size):
                     self._raise_if_stop_requested()
-                    if hearing_chunk_index in hearing_checkpoint:
-                        hearing_chunk_index += 1
-                        continue
                     response = self._request_plain_text(
                         {
                             "api_url": settings["api_url"],
@@ -6006,14 +5923,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         chunk,
                     )
                     cleaned_response = response.strip() if response else ""
-                    hearing_checkpoint[hearing_chunk_index] = cleaned_response
-                    _append_indexed_jsonl(
-                        hearing_checkpoint_path,
-                        hearing_chunk_index,
-                        cleaned_response,
-                        label=date_value or "HEARING",
-                    )
-                    hearing_chunk_index += 1
+                    hearing_responses.append(cleaned_response)
 
             first_section = True
             hearing_chunk_index = 0
@@ -6026,7 +5936,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 first_section = False
                 for chunk in _chunk_paragraphs(paragraphs, chunk_size):
                     self._raise_if_stop_requested()
-                    response = hearing_checkpoint.get(hearing_chunk_index, "")
+                    response = hearing_responses[hearing_chunk_index] if hearing_chunk_index < len(hearing_responses) else ""
                     hearing_chunk_index += 1
                     if response:
                         cleaned_response = _remove_hearing_date_mentions(response.strip())
@@ -6044,32 +5954,25 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             report_paragraphs = [
                 re.sub(r"^Reporting:\s*", "", paragraph) for paragraph in report_paragraphs
             ]
-            report_chunk_index = 0
+            report_responses: list[str] = []
             for chunk in _chunk_paragraphs(report_paragraphs, chunk_size):
                 self._raise_if_stop_requested()
-                if report_chunk_index not in report_checkpoint:
-                    response = self._request_plain_text(
-                        {
-                            "api_url": settings["api_url"],
-                            "model_id": settings["model_id"],
-                            "api_key": settings["api_key"],
-                            "prompt": settings["reports_prompt"],
-                        },
-                        chunk,
-                    )
-                    cleaned_response = response.strip() if response else ""
-                    report_checkpoint[report_chunk_index] = cleaned_response
-                    _append_indexed_jsonl(
-                        report_checkpoint_path,
-                        report_chunk_index,
-                        cleaned_response,
-                    )
-                report_chunk_index += 1
+                response = self._request_plain_text(
+                    {
+                        "api_url": settings["api_url"],
+                        "model_id": settings["model_id"],
+                        "api_key": settings["api_key"],
+                        "prompt": settings["reports_prompt"],
+                    },
+                    chunk,
+                )
+                cleaned_response = response.strip() if response else ""
+                report_responses.append(cleaned_response)
 
             report_chunk_index = 0
             for chunk in _chunk_paragraphs(report_paragraphs, chunk_size):
                 self._raise_if_stop_requested()
-                response = report_checkpoint.get(report_chunk_index, "")
+                response = report_responses[report_chunk_index] if report_chunk_index < len(report_responses) else ""
                 report_chunk_index += 1
                 if response:
                     summary_reports.append(response.strip())
@@ -6104,26 +6007,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                         raise FileNotFoundError(f"Missing text file {page_path.name}.")
                     page_texts.append(page_path.read_text(encoding="utf-8", errors="ignore"))
                 minutes_payload = "\n".join(page_texts).strip()
-                response = minutes_checkpoint.get(minutes_index, "")
-                if minutes_index not in minutes_checkpoint:
-                    if minutes_payload:
-                        response = self._request_plain_text(
-                            {
-                                "api_url": settings["api_url"],
-                                "model_id": settings["model_id"],
-                                "api_key": settings["api_key"],
-                                "prompt": settings["minutes_prompt"],
-                            },
-                            minutes_payload,
-                        )
-                    response = response.strip() if response else ""
-                    minutes_checkpoint[minutes_index] = response
-                    _append_indexed_jsonl(
-                        minutes_checkpoint_path,
-                        minutes_index,
-                        response,
-                        label=date_value or "Minute Order",
+                response = ""
+                if minutes_payload:
+                    response = self._request_plain_text(
+                        {
+                            "api_url": settings["api_url"],
+                            "model_id": settings["model_id"],
+                            "api_key": settings["api_key"],
+                            "prompt": settings["minutes_prompt"],
+                        },
+                        minutes_payload,
                     )
+                response = response.strip() if response else ""
                 if response:
                     minutes_outline.append(" ".join(response.split()))
                 else:
