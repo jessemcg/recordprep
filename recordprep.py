@@ -1570,13 +1570,6 @@ def _generate_text_files_with_local_ocr(
             target = text_dir / f"{image_path.stem}.txt"
             target.write_text(text, encoding="utf-8")
 
-        for text_path in sorted(text_dir.glob("*.txt"), key=_natural_sort_key):
-            if stop_check:
-                stop_check()
-            converted = _convert_html_tables(text_path.read_text(encoding="utf-8"))
-            plain_text = LatexNodes2Text().latex_to_text(converted)
-            cleaned = _strip_markdown(plain_text)
-            text_path.write_text(cleaned, encoding="utf-8")
     finally:
         if server_process is not None:
             _stop_server(server_process)
@@ -3177,8 +3170,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self.step_list.append(self.step_one_row)
 
         self.step_strip_nonstandard_row = Adw.ActionRow(
-            title="Strip characters",
-            subtitle="Remove non-printing characters from the extracted text files.",
+            title="Process text files",
+            subtitle="Clean non-printing characters, normalize tables, and convert LaTeX.",
         )
         self.step_strip_nonstandard_row.set_activatable(False)
         self._attach_step_controls(
@@ -3959,6 +3952,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         root_dir: Path,
         pipeline_info: dict[str, Any] | None = None,
         rt_ct_split_page: int | None = None,
+        rt_ct_split_mode: str | None = None,
     ) -> None:
         try:
             if pipeline_info:
@@ -3980,6 +3974,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 self.selected_pdfs,
                 pipeline_info=pipeline_info,
                 rt_ct_split_page=rt_ct_split_page,
+                rt_ct_split_mode=rt_ct_split_mode,
             )
         except Exception as exc:
             GLib.idle_add(self.show_toast, f"Manifest update failed: {exc}")
@@ -4327,17 +4322,20 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 raise FileNotFoundError("Run Create files to generate text files first.")
             text_files = sorted(text_dir.glob("*.txt"), key=_natural_sort_key)
             if not text_files:
-                raise FileNotFoundError("No text files found to sanitize.")
+                raise FileNotFoundError("No text files found to process.")
             for text_path in text_files:
                 self._raise_if_stop_requested()
                 content = text_path.read_text(encoding="utf-8", errors="ignore")
                 cleaned = _strip_nonstandard_characters(content)
-                if cleaned != content:
-                    text_path.write_text(cleaned, encoding="utf-8")
+                converted = _convert_html_tables(cleaned)
+                plain_text = LatexNodes2Text().latex_to_text(converted)
+                processed = _strip_markdown(plain_text)
+                if processed != content:
+                    text_path.write_text(processed, encoding="utf-8")
         except StopRequested:
             success = None
         except Exception as exc:
-            GLib.idle_add(self.show_toast, f"Strip non-standard characters failed: {exc}")
+            GLib.idle_add(self.show_toast, f"Process text files failed: {exc}")
         else:
             success = True
             self._safe_update_manifest(
@@ -4348,7 +4346,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "last_failed_at": None,
                 },
             )
-            GLib.idle_add(self.show_toast, "Strip non-standard characters complete.")
+            GLib.idle_add(self.show_toast, "Process text files complete.")
         finally:
             GLib.idle_add(self.step_strip_nonstandard_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_strip_nonstandard_row, success)
