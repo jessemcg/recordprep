@@ -3784,7 +3784,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         entry.set_width_chars(4)
         entry.set_max_length(5)
         entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
-        entry.connect("changed", self._on_rt_ct_split_changed)
+        entry.connect("activate", self._on_rt_ct_split_commit)
+        entry.connect("notify::has-focus", self._on_rt_ct_split_focus_notify)
         controls.append(entry)
 
         self._rt_ct_split_dropdown = dropdown
@@ -3803,7 +3804,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         if entry is None or dropdown is None:
             return
         self._rt_ct_split_updating = True
-        entry.set_text(str(split_page or ""))
+        if not entry.has_focus():
+            entry.set_text(str(split_page or ""))
         dropdown.set_selected(
             0 if split_mode == "split" else (1 if split_mode == "rt_only" else 2)
         )
@@ -3895,7 +3897,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._set_rt_ct_split_ui(_read_rt_ct_split_page(root_dir), total_pages, mode)
         self._refresh_step_statuses_from_artifacts()
 
-    def _on_rt_ct_split_changed(self, entry: Gtk.Entry) -> None:
+    def _commit_rt_ct_split_entry(self, entry: Gtk.Entry, allow_ui_update: bool) -> None:
         if self._rt_ct_split_updating:
             return
         raw = entry.get_text().strip()
@@ -3908,7 +3910,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             self._rt_ct_split_pending = split_page
             _write_rt_ct_split_page_config(split_page)
             pending_mode = self._rt_ct_split_mode_pending or "split"
-            self._set_rt_ct_split_ui(split_page, None, pending_mode)
+            if allow_ui_update and not entry.has_focus():
+                self._set_rt_ct_split_ui(split_page, None, pending_mode)
             return
         try:
             _write_manifest(
@@ -3921,11 +3924,24 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         except Exception as exc:
             self.show_toast(f"Unable to save RT/CT split: {exc}")
         self._refresh_step_statuses_from_artifacts()
-        self._set_rt_ct_split_ui(
-            _read_rt_ct_split_page(root_dir),
-            _count_text_pages(root_dir / "text_pages"),
-            _read_rt_ct_split_mode(root_dir),
+        if allow_ui_update and not entry.has_focus():
+            self._set_rt_ct_split_ui(
+                _read_rt_ct_split_page(root_dir),
+                _count_text_pages(root_dir / "text_pages"),
+                _read_rt_ct_split_mode(root_dir),
+            )
+
+    def _on_rt_ct_split_commit(self, entry: Gtk.Entry) -> None:
+        self._commit_rt_ct_split_entry(entry, allow_ui_update=False)
+
+    def _on_rt_ct_split_focus_notify(
+        self, entry: Gtk.Entry, _pspec: GObject.ParamSpec
+    ) -> None:
+        has_focus = (
+            entry.has_focus() if hasattr(entry, "has_focus") else entry.get_property("has-focus")
         )
+        if not has_focus:
+            self._commit_rt_ct_split_entry(entry, allow_ui_update=True)
 
     def _raise_if_stop_requested(self) -> None:
         if self._stop_event.is_set():
