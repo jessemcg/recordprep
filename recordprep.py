@@ -1478,7 +1478,7 @@ def _convert_html_tables(content: str) -> str:
         if not rows and not headers:
             table.replace_with(NavigableString(""))
             continue
-        table_text = tabulate(rows, headers=headers or (), tablefmt="plain")
+        table_text = tabulate(rows, headers=headers or (), tablefmt="rounded_grid")
         table.replace_with(NavigableString(f"\n{table_text}\n"))
 
     return soup.get_text(separator="\n\n", strip=True)
