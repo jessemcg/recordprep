@@ -6150,10 +6150,13 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 if self.selected_pdfs:
                     raise ValueError("Selected PDFs must be in the same folder.")
                 raise ValueError("Choose PDF files or select a saved case first.")
-            summaries_dir = root_dir / "summaries"
-            summaries_path, reports_path = _summary_output_paths(root_dir)
-            if not summaries_path.exists() or not reports_path.exists():
-                raise FileNotFoundError("Run Create summaries to generate summarized files first.")
+            artifacts_dir = root_dir / "artifacts"
+            optimized_hearings_path = artifacts_dir / "optimized_hearings.txt"
+            optimized_reports_path = artifacts_dir / "optimized_reports.txt"
+            if not optimized_hearings_path.exists() or not optimized_reports_path.exists():
+                raise FileNotFoundError(
+                    "Run Create optimized to generate optimized files first."
+                )
             settings = load_rag_settings()
             if not settings["voyage_api_key"] or not settings["voyage_model"]:
                 raise ValueError("Configure Voyage credentials in Settings.")
@@ -6183,8 +6186,12 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 embedding_function=rag_embedder,
             )
 
-            hearing_text = summaries_path.read_text(encoding="utf-8", errors="ignore")
-            report_text = reports_path.read_text(encoding="utf-8", errors="ignore")
+            hearing_text = optimized_hearings_path.read_text(
+                encoding="utf-8", errors="ignore"
+            )
+            report_text = optimized_reports_path.read_text(
+                encoding="utf-8", errors="ignore"
+            )
             if not hearing_text.strip() and not report_text.strip():
                 raise ValueError("No optimized content available for RAG index.")
 
@@ -6194,7 +6201,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 documents.append(
                     Document(
                         page_content=paragraph,
-                        metadata={"source": summaries_path.name},
+                        metadata={"source": optimized_hearings_path.name},
                     )
                 )
             for paragraph in _split_paragraphs(report_text):
@@ -6202,7 +6209,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 documents.append(
                     Document(
                         page_content=paragraph,
-                        metadata={"source": reports_path.name},
+                        metadata={"source": optimized_reports_path.name},
                     )
                 )
             if not documents:

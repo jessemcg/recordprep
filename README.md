@@ -18,7 +18,7 @@ case bundle with classifications, summaries, and retrieval-ready artifacts for a
 - Classifies pages, adds dates/names, and builds a table of contents.
 - Finds hearing/report/minute order boundaries.
 - Generates raw and optimized text, summaries, and a case overview.
-- Optionally builds a VoyageAI/Chroma RAG index from summarized content.
+- Optionally builds a VoyageAI/Chroma RAG index from optimized hearing/report content.
 
 <img src="recordprep_screenshot.png" alt="Record Prep screenshot" width="500">
 
