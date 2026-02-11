@@ -542,6 +542,27 @@ def _load_jsonl_file_names(path: Path) -> set[str]:
     return file_names
 
 
+def _last_jsonl_file_name(path: Path) -> str:
+    last_file_name = ""
+    if not path.exists():
+        return last_file_name
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            file_name = _extract_entry_value(payload, "file_name", "filename")
+            if file_name:
+                last_file_name = file_name
+    return last_file_name
+
+
 def _load_json_entries(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -4621,6 +4642,18 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 ct_basic_path.touch(exist_ok=True)
             done_rt = _load_jsonl_file_names(rt_basic_path) if need_rt else set()
             done_ct = _load_jsonl_file_names(ct_basic_path) if need_ct else set()
+            rt_last_done = _last_jsonl_file_name(rt_basic_path) if need_rt else ""
+            ct_last_done = _last_jsonl_file_name(ct_basic_path) if need_ct else ""
+            if rt_last_done:
+                GLib.idle_add(
+                    self.show_toast,
+                    f"Classification basic RT resume: continuing after {rt_last_done}.",
+                )
+            if ct_last_done:
+                GLib.idle_add(
+                    self.show_toast,
+                    f"Classification basic CT resume: continuing after {ct_last_done}.",
+                )
             basic_rt_settings = {
                 "api_url": shared_settings["api_url"],
                 "model_id": shared_settings["model_id"],
@@ -4802,53 +4835,99 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 rt_entries = _load_jsonl_entries(rt_basic_path)
                 if not rt_entries:
                     raise FileNotFoundError("No entries found in RT_basic.jsonl.")
-                for entry in rt_entries:
-                    self._raise_if_stop_requested()
-                    if _maybe_update_page_type(
-                        entry,
-                        ("rt_body", "hearing_page", "hearing"),
-                        "RT_body_first_page",
-                        settings["hearing_prompt"],
-                        (
-                            "first_page",
-                            "first",
-                            "is_first_page",
-                            "is_first",
-                        ),
-                    ):
-                        updates += 1
-                with rt_advanced_path.open("w", encoding="utf-8") as handle:
+                rt_entries.sort(
+                    key=lambda entry: _natural_sort_key(
+                        _extract_entry_value(entry, "file_name", "filename")
+                    )
+                )
+                rt_done = _load_jsonl_file_names(rt_advanced_path)
+                rt_last_done = _last_jsonl_file_name(rt_advanced_path)
+                rt_resume_key = _natural_sort_key(rt_last_done) if rt_last_done else None
+                if rt_last_done:
+                    GLib.idle_add(
+                        self.show_toast,
+                        f"Classification advanced RT resume: continuing after {rt_last_done}.",
+                    )
+                rt_mode = "a" if rt_done else "w"
+                with rt_advanced_path.open(rt_mode, encoding="utf-8") as handle:
                     for entry in rt_entries:
+                        self._raise_if_stop_requested()
+                        file_name = _extract_entry_value(entry, "file_name", "filename")
+                        if file_name and rt_resume_key is not None:
+                            if _natural_sort_key(file_name) <= rt_resume_key:
+                                continue
+                        if file_name and file_name in rt_done:
+                            continue
+                        if _maybe_update_page_type(
+                            entry,
+                            ("rt_body", "hearing_page", "hearing"),
+                            "RT_body_first_page",
+                            settings["hearing_prompt"],
+                            (
+                                "first_page",
+                                "first",
+                                "is_first_page",
+                                "is_first",
+                            ),
+                        ):
+                            updates += 1
                         handle.write(json.dumps(entry))
                         handle.write("\n")
+                        if file_name:
+                            rt_done.add(file_name)
 
             if need_ct:
                 ct_entries = _load_jsonl_entries(ct_basic_path)
                 if not ct_entries:
                     raise FileNotFoundError("No entries found in CT_basic.jsonl.")
-                for entry in ct_entries:
-                    self._raise_if_stop_requested()
-                    if _maybe_update_page_type(
-                        entry,
-                        ("ct_minute_order",),
-                        "CT_minute_order_first_page",
-                        settings["minute_prompt"],
-                        ("first_page", "first", "is_first_page", "is_first"),
-                    ):
-                        updates += 1
-                        continue
-                    if _maybe_update_page_type(
-                        entry,
-                        ("ct_form",),
-                        "CT_form_first_page",
-                        settings["form_prompt"],
-                        ("first_page", "first", "is_first_page", "is_first"),
-                    ):
-                        updates += 1
-                with ct_advanced_path.open("w", encoding="utf-8") as handle:
+                ct_entries.sort(
+                    key=lambda entry: _natural_sort_key(
+                        _extract_entry_value(entry, "file_name", "filename")
+                    )
+                )
+                ct_done = _load_jsonl_file_names(ct_advanced_path)
+                ct_last_done = _last_jsonl_file_name(ct_advanced_path)
+                ct_resume_key = _natural_sort_key(ct_last_done) if ct_last_done else None
+                if ct_last_done:
+                    GLib.idle_add(
+                        self.show_toast,
+                        f"Classification advanced CT resume: continuing after {ct_last_done}.",
+                    )
+                ct_mode = "a" if ct_done else "w"
+                with ct_advanced_path.open(ct_mode, encoding="utf-8") as handle:
                     for entry in ct_entries:
+                        self._raise_if_stop_requested()
+                        file_name = _extract_entry_value(entry, "file_name", "filename")
+                        if file_name and ct_resume_key is not None:
+                            if _natural_sort_key(file_name) <= ct_resume_key:
+                                continue
+                        if file_name and file_name in ct_done:
+                            continue
+                        if _maybe_update_page_type(
+                            entry,
+                            ("ct_minute_order",),
+                            "CT_minute_order_first_page",
+                            settings["minute_prompt"],
+                            ("first_page", "first", "is_first_page", "is_first"),
+                        ):
+                            updates += 1
+                            handle.write(json.dumps(entry))
+                            handle.write("\n")
+                            if file_name:
+                                ct_done.add(file_name)
+                            continue
+                        if _maybe_update_page_type(
+                            entry,
+                            ("ct_form",),
+                            "CT_form_first_page",
+                            settings["form_prompt"],
+                            ("first_page", "first", "is_first_page", "is_first"),
+                        ):
+                            updates += 1
                         handle.write(json.dumps(entry))
                         handle.write("\n")
+                        if file_name:
+                            ct_done.add(file_name)
         except StopRequested:
             success = None
         except Exception as exc:
@@ -4930,35 +5009,50 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 hearing_first_types = {
                     "rt_body_first_page",
                 }
-                for entry in rt_entries:
-                    self._raise_if_stop_requested()
-                    page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
-                    if page_type not in hearing_first_types:
-                        continue
-                    if _extract_entry_value(entry, "date"):
-                        continue
-                    file_name = _extract_entry_value(entry, "file_name", "filename")
-                    if not file_name:
-                        continue
-                    image_path = _image_path_for_filename(file_name, image_dir)
-                    response = self._classify_image(
-                        {
-                            "api_url": shared_settings["api_url"],
-                            "model_id": shared_settings["model_id"],
-                            "api_key": shared_settings["api_key"],
-                            "prompt": settings["hearing_prompt"],
-                        },
-                        file_name,
-                        image_path,
+                rt_entries.sort(
+                    key=lambda entry: _natural_sort_key(
+                        _extract_entry_value(entry, "file_name", "filename")
                     )
-                    date_value = _extract_entry_value(response, "date")
-                    if date_value:
-                        entry["date"] = date_value
-                        updates += 1
-                with rt_dated_path.open("w", encoding="utf-8") as handle:
+                )
+                rt_done = _load_jsonl_file_names(rt_dated_path)
+                rt_last_done = _last_jsonl_file_name(rt_dated_path)
+                rt_resume_key = _natural_sort_key(rt_last_done) if rt_last_done else None
+                if rt_last_done:
+                    GLib.idle_add(
+                        self.show_toast,
+                        f"Classification dates RT resume: continuing after {rt_last_done}.",
+                    )
+                rt_mode = "a" if rt_done else "w"
+                with rt_dated_path.open(rt_mode, encoding="utf-8") as handle:
                     for entry in rt_entries:
+                        self._raise_if_stop_requested()
+                        page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                        file_name = _extract_entry_value(entry, "file_name", "filename")
+                        if file_name and rt_resume_key is not None:
+                            if _natural_sort_key(file_name) <= rt_resume_key:
+                                continue
+                        if file_name and file_name in rt_done:
+                            continue
+                        if page_type in hearing_first_types and not _extract_entry_value(entry, "date") and file_name:
+                            image_path = _image_path_for_filename(file_name, image_dir)
+                            response = self._classify_image(
+                                {
+                                    "api_url": shared_settings["api_url"],
+                                    "model_id": shared_settings["model_id"],
+                                    "api_key": shared_settings["api_key"],
+                                    "prompt": settings["hearing_prompt"],
+                                },
+                                file_name,
+                                image_path,
+                            )
+                            date_value = _extract_entry_value(response, "date")
+                            if date_value:
+                                entry["date"] = date_value
+                                updates += 1
                         handle.write(json.dumps(entry))
                         handle.write("\n")
+                        if file_name:
+                            rt_done.add(file_name)
 
             if need_ct:
                 ct_entries = _load_jsonl_entries(ct_advanced_path)
@@ -4966,35 +5060,50 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise FileNotFoundError(
                         "No entries found in CT_basic_advanced.jsonl."
                     )
-                for entry in ct_entries:
-                    self._raise_if_stop_requested()
-                    page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
-                    if page_type not in minute_first_types:
-                        continue
-                    if _extract_entry_value(entry, "date"):
-                        continue
-                    file_name = _extract_entry_value(entry, "file_name", "filename")
-                    if not file_name:
-                        continue
-                    image_path = _image_path_for_filename(file_name, image_dir)
-                    response = self._classify_image(
-                        {
-                            "api_url": shared_settings["api_url"],
-                            "model_id": shared_settings["model_id"],
-                            "api_key": shared_settings["api_key"],
-                            "prompt": settings["minute_prompt"],
-                        },
-                        file_name,
-                        image_path,
+                ct_entries.sort(
+                    key=lambda entry: _natural_sort_key(
+                        _extract_entry_value(entry, "file_name", "filename")
                     )
-                    date_value = _extract_entry_value(response, "date")
-                    if date_value:
-                        entry["date"] = date_value
-                        updates += 1
-                with ct_dated_path.open("w", encoding="utf-8") as handle:
+                )
+                ct_done = _load_jsonl_file_names(ct_dated_path)
+                ct_last_done = _last_jsonl_file_name(ct_dated_path)
+                ct_resume_key = _natural_sort_key(ct_last_done) if ct_last_done else None
+                if ct_last_done:
+                    GLib.idle_add(
+                        self.show_toast,
+                        f"Classification dates CT resume: continuing after {ct_last_done}.",
+                    )
+                ct_mode = "a" if ct_done else "w"
+                with ct_dated_path.open(ct_mode, encoding="utf-8") as handle:
                     for entry in ct_entries:
+                        self._raise_if_stop_requested()
+                        page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                        file_name = _extract_entry_value(entry, "file_name", "filename")
+                        if file_name and ct_resume_key is not None:
+                            if _natural_sort_key(file_name) <= ct_resume_key:
+                                continue
+                        if file_name and file_name in ct_done:
+                            continue
+                        if page_type in minute_first_types and not _extract_entry_value(entry, "date") and file_name:
+                            image_path = _image_path_for_filename(file_name, image_dir)
+                            response = self._classify_image(
+                                {
+                                    "api_url": shared_settings["api_url"],
+                                    "model_id": shared_settings["model_id"],
+                                    "api_key": shared_settings["api_key"],
+                                    "prompt": settings["minute_prompt"],
+                                },
+                                file_name,
+                                image_path,
+                            )
+                            date_value = _extract_entry_value(response, "date")
+                            if date_value:
+                                entry["date"] = date_value
+                                updates += 1
                         handle.write(json.dumps(entry))
                         handle.write("\n")
+                        if file_name:
+                            ct_done.add(file_name)
         except StopRequested:
             success = None
         except Exception as exc:
@@ -5068,10 +5177,33 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise FileNotFoundError(
                         "No entries found in RT_basic_advanced_dates.jsonl."
                     )
-                with rt_named_path.open("w", encoding="utf-8") as handle:
+                rt_entries.sort(
+                    key=lambda entry: _natural_sort_key(
+                        _extract_entry_value(entry, "file_name", "filename")
+                    )
+                )
+                rt_done = _load_jsonl_file_names(rt_named_path)
+                rt_last_done = _last_jsonl_file_name(rt_named_path)
+                rt_resume_key = _natural_sort_key(rt_last_done) if rt_last_done else None
+                if rt_last_done:
+                    GLib.idle_add(
+                        self.show_toast,
+                        f"Classification names RT resume: continuing after {rt_last_done}.",
+                    )
+                rt_mode = "a" if rt_done else "w"
+                with rt_named_path.open(rt_mode, encoding="utf-8") as handle:
                     for entry in rt_entries:
+                        self._raise_if_stop_requested()
+                        file_name = _extract_entry_value(entry, "file_name", "filename")
+                        if file_name and rt_resume_key is not None:
+                            if _natural_sort_key(file_name) <= rt_resume_key:
+                                continue
+                        if file_name and file_name in rt_done:
+                            continue
                         handle.write(json.dumps(entry))
                         handle.write("\n")
+                        if file_name:
+                            rt_done.add(file_name)
 
             if need_ct:
                 ct_entries = _load_jsonl_entries(ct_dated_path)
@@ -5079,60 +5211,69 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     raise FileNotFoundError(
                         "No entries found in CT_basic_advanced_dates.jsonl."
                     )
+                ct_entries.sort(
+                    key=lambda entry: _natural_sort_key(
+                        _extract_entry_value(entry, "file_name", "filename")
+                    )
+                )
+                ct_done = _load_jsonl_file_names(ct_named_path)
+                ct_last_done = _last_jsonl_file_name(ct_named_path)
+                ct_resume_key = _natural_sort_key(ct_last_done) if ct_last_done else None
+                if ct_last_done:
+                    GLib.idle_add(
+                        self.show_toast,
+                        f"Classification names CT resume: continuing after {ct_last_done}.",
+                    )
+                ct_mode = "a" if ct_done else "w"
                 previous_report = False
-                for entry in ct_entries:
-                    self._raise_if_stop_requested()
-                    page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
-                    is_report_start = page_type in report_types and not previous_report
-                    previous_report = page_type in report_types
-                    if is_report_start:
-                        if _extract_entry_value(entry, "name"):
-                            continue
-                        file_name = _extract_entry_value(entry, "file_name", "filename")
-                        if not file_name:
-                            continue
-                        image_path = _image_path_for_filename(file_name, image_dir)
-                        response = self._classify_image(
-                            {
-                                "api_url": shared_settings["api_url"],
-                                "model_id": shared_settings["model_id"],
-                                "api_key": shared_settings["api_key"],
-                                "prompt": settings["report_prompt"],
-                            },
-                            file_name,
-                            image_path,
-                        )
-                        name_value = _extract_entry_value(response, "name", "report_name")
-                        if name_value:
-                            entry["name"] = name_value
-                            updates += 1
-                        continue
-                    if page_type in form_first_types:
-                        if _extract_entry_value(entry, "name"):
-                            continue
-                        file_name = _extract_entry_value(entry, "file_name", "filename")
-                        if not file_name:
-                            continue
-                        image_path = _image_path_for_filename(file_name, image_dir)
-                        response = self._classify_image(
-                            {
-                                "api_url": shared_settings["api_url"],
-                                "model_id": shared_settings["model_id"],
-                                "api_key": shared_settings["api_key"],
-                                "prompt": settings["form_prompt"],
-                            },
-                            file_name,
-                            image_path,
-                        )
-                        name_value = _extract_entry_value(response, "name", "form_name")
-                        if name_value:
-                            entry["name"] = name_value
-                            updates += 1
-
-                with ct_named_path.open("w", encoding="utf-8") as handle:
+                with ct_named_path.open(ct_mode, encoding="utf-8") as handle:
                     for entry in ct_entries:
+                        self._raise_if_stop_requested()
+                        page_type = _extract_entry_value(entry, "page_type", "pagetype").strip().lower()
+                        is_report_start = page_type in report_types and not previous_report
+                        previous_report = page_type in report_types
+                        file_name = _extract_entry_value(entry, "file_name", "filename")
+                        if file_name and ct_resume_key is not None:
+                            if _natural_sort_key(file_name) <= ct_resume_key:
+                                continue
+                        if file_name and file_name in ct_done:
+                            continue
+                        if is_report_start and not _extract_entry_value(entry, "name") and file_name:
+                            image_path = _image_path_for_filename(file_name, image_dir)
+                            response = self._classify_image(
+                                {
+                                    "api_url": shared_settings["api_url"],
+                                    "model_id": shared_settings["model_id"],
+                                    "api_key": shared_settings["api_key"],
+                                    "prompt": settings["report_prompt"],
+                                },
+                                file_name,
+                                image_path,
+                            )
+                            name_value = _extract_entry_value(response, "name", "report_name")
+                            if name_value:
+                                entry["name"] = name_value
+                                updates += 1
+                        elif page_type in form_first_types and not _extract_entry_value(entry, "name") and file_name:
+                            image_path = _image_path_for_filename(file_name, image_dir)
+                            response = self._classify_image(
+                                {
+                                    "api_url": shared_settings["api_url"],
+                                    "model_id": shared_settings["model_id"],
+                                    "api_key": shared_settings["api_key"],
+                                    "prompt": settings["form_prompt"],
+                                },
+                                file_name,
+                                image_path,
+                            )
+                            name_value = _extract_entry_value(response, "name", "form_name")
+                            if name_value:
+                                entry["name"] = name_value
+                                updates += 1
                         handle.write(json.dumps(entry))
                         handle.write("\n")
+                        if file_name:
+                            ct_done.add(file_name)
         except StopRequested:
             success = None
         except Exception as exc:
