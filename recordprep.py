@@ -1134,17 +1134,17 @@ def _write_manifest(
             "ct_basic_advanced_corrected": _relpath(
                 classification_dir / "CT_basic_advanced_corrected.jsonl"
             ),
-            "rt_basic_advanced_dates": _relpath(
-                classification_dir / "RT_basic_advanced_dates.jsonl"
+            "rt_basic_advanced_corrected_dates": _relpath(
+                classification_dir / "RT_basic_advanced_corrected_dates.jsonl"
             ),
-            "ct_basic_advanced_dates": _relpath(
-                classification_dir / "CT_basic_advanced_dates.jsonl"
+            "ct_basic_advanced_corrected_dates": _relpath(
+                classification_dir / "CT_basic_advanced_corrected_dates.jsonl"
             ),
-            "rt_basic_advanced_dates_names": _relpath(
-                classification_dir / "RT_basic_advanced_dates_names.jsonl"
+            "rt_basic_advanced_corrected_dates_names": _relpath(
+                classification_dir / "RT_basic_advanced_corrected_dates_names.jsonl"
             ),
-            "ct_basic_advanced_dates_names": _relpath(
-                classification_dir / "CT_basic_advanced_dates_names.jsonl"
+            "ct_basic_advanced_corrected_dates_names": _relpath(
+                classification_dir / "CT_basic_advanced_corrected_dates_names.jsonl"
             ),
             "hearings_pages": _relpath(classification_dir / "hearings_pages.jsonl"),
             "minute_order_pages": _relpath(classification_dir / "minute_order_pages.jsonl"),
@@ -3737,15 +3737,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         _set_done(
             self.step_dates_row,
             _rt_ct_ready(
-                classification_dir / "RT_basic_advanced_dates.jsonl",
-                classification_dir / "CT_basic_advanced_dates.jsonl",
+                classification_dir / "RT_basic_advanced_corrected_dates.jsonl",
+                classification_dir / "CT_basic_advanced_corrected_dates.jsonl",
             ),
         )
         _set_done(
             self.step_names_row,
             _rt_ct_ready(
-                classification_dir / "RT_basic_advanced_dates_names.jsonl",
-                classification_dir / "CT_basic_advanced_dates_names.jsonl",
+                classification_dir / "RT_basic_advanced_corrected_dates_names.jsonl",
+                classification_dir / "CT_basic_advanced_corrected_dates_names.jsonl",
             ),
         )
         _set_done(self.step_six_row, (artifacts_dir / "toc.txt").exists())
@@ -5129,8 +5129,8 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             )
             rt_advanced_path = classification_dir / "RT_basic_advanced_corrected.jsonl"
             ct_advanced_path = classification_dir / "CT_basic_advanced_corrected.jsonl"
-            rt_dated_path = classification_dir / "RT_basic_advanced_dates.jsonl"
-            ct_dated_path = classification_dir / "CT_basic_advanced_dates.jsonl"
+            rt_dated_path = classification_dir / "RT_basic_advanced_corrected_dates.jsonl"
+            ct_dated_path = classification_dir / "CT_basic_advanced_corrected_dates.jsonl"
             if need_rt and not rt_advanced_path.exists():
                 raise FileNotFoundError(
                     "Run Correct classification advanced to generate RT_basic_advanced_corrected.jsonl first."
@@ -5300,17 +5300,17 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
             )
-            rt_dated_path = classification_dir / "RT_basic_advanced_dates.jsonl"
-            ct_dated_path = classification_dir / "CT_basic_advanced_dates.jsonl"
-            rt_named_path = classification_dir / "RT_basic_advanced_dates_names.jsonl"
-            ct_named_path = classification_dir / "CT_basic_advanced_dates_names.jsonl"
+            rt_dated_path = classification_dir / "RT_basic_advanced_corrected_dates.jsonl"
+            ct_dated_path = classification_dir / "CT_basic_advanced_corrected_dates.jsonl"
+            rt_named_path = classification_dir / "RT_basic_advanced_corrected_dates_names.jsonl"
+            ct_named_path = classification_dir / "CT_basic_advanced_corrected_dates_names.jsonl"
             if need_rt and not rt_dated_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates to generate RT_basic_advanced_dates.jsonl first."
+                    "Run Classification dates to generate RT_basic_advanced_corrected_dates.jsonl first."
                 )
             if need_ct and not ct_dated_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates to generate CT_basic_advanced_dates.jsonl first."
+                    "Run Classification dates to generate CT_basic_advanced_corrected_dates.jsonl first."
                 )
             report_types = {"ct_report"}
             form_first_types = {"ct_form_first_page"}
@@ -5320,7 +5320,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 rt_entries = _load_jsonl_entries(rt_dated_path)
                 if not rt_entries:
                     raise FileNotFoundError(
-                        "No entries found in RT_basic_advanced_dates.jsonl."
+                        "No entries found in RT_basic_advanced_corrected_dates.jsonl."
                     )
                 rt_entries.sort(
                     key=lambda entry: _natural_sort_key(
@@ -5354,7 +5354,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 ct_entries = _load_jsonl_entries(ct_dated_path)
                 if not ct_entries:
                     raise FileNotFoundError(
-                        "No entries found in CT_basic_advanced_dates.jsonl."
+                        "No entries found in CT_basic_advanced_corrected_dates.jsonl."
                     )
                 ct_entries.sort(
                     key=lambda entry: _natural_sort_key(
@@ -5458,15 +5458,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
             )
-            rt_named_path = classification_dir / "RT_basic_advanced_dates_names.jsonl"
-            ct_named_path = classification_dir / "CT_basic_advanced_dates_names.jsonl"
+            rt_named_path = classification_dir / "RT_basic_advanced_corrected_dates_names.jsonl"
+            ct_named_path = classification_dir / "CT_basic_advanced_corrected_dates_names.jsonl"
             if need_rt and not rt_named_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates and names to generate RT_basic_advanced_dates_names.jsonl first."
+                    "Run Classification dates and names to generate RT_basic_advanced_corrected_dates_names.jsonl first."
                 )
             if need_ct and not ct_named_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates and names to generate CT_basic_advanced_dates_names.jsonl first."
+                    "Run Classification dates and names to generate CT_basic_advanced_corrected_dates_names.jsonl first."
                 )
             derived_dir.mkdir(parents=True, exist_ok=True)
             paths: list[Path] = []
@@ -5662,15 +5662,15 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             split_page, _total_pages, need_rt, need_ct, _split_mode = _resolve_rt_ct_split(
                 root_dir, text_dir
             )
-            rt_named_path = classification_dir / "RT_basic_advanced_dates_names.jsonl"
-            ct_named_path = classification_dir / "CT_basic_advanced_dates_names.jsonl"
+            rt_named_path = classification_dir / "RT_basic_advanced_corrected_dates_names.jsonl"
+            ct_named_path = classification_dir / "CT_basic_advanced_corrected_dates_names.jsonl"
             if need_rt and not rt_named_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates and names to generate RT_basic_advanced_dates_names.jsonl first."
+                    "Run Classification dates and names to generate RT_basic_advanced_corrected_dates_names.jsonl first."
                 )
             if need_ct and not ct_named_path.exists():
                 raise FileNotFoundError(
-                    "Run Classification dates and names to generate CT_basic_advanced_dates_names.jsonl first."
+                    "Run Classification dates and names to generate CT_basic_advanced_corrected_dates_names.jsonl first."
                 )
             derived_dir.mkdir(parents=True, exist_ok=True)
             date_by_file: dict[str, str] = {}
