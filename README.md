@@ -67,8 +67,8 @@ case_bundle/
 - Infer case: derive the case name from the first pages and save `case_name.txt`.
 - Classification basic: classify every page into major page types.
 - Correct basic classification: fix common page-type gaps.
-- Advanced classification: mark hearing last pages, minute/form first pages.
-- Correct advanced classification: remove consecutive hearing last-page markers.
+- Advanced classification: mark hearing, minute, and form first pages.
+- Correct advanced classification: when two `RT_body_first_page` markers are consecutive, keep the first and convert the second to `RT_body`.
 - Classification dates: add hearing and minute order dates (vision model on page images).
 - Classification names: add report and form names (vision model on page images).
 - Build TOC: generate `artifacts/toc.txt`.
