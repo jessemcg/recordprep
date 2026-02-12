@@ -274,6 +274,7 @@ DEFAULT_OVERVIEW_PROMPT = (
 )
 DEFAULT_RAG_VOYAGE_MODEL = "voyage-law-2"
 DEFAULT_RAG_ISAACUS_MODEL = "kanon-2-embedder"
+ISAACUS_MAX_EMBED_BATCH = 128
 
 
 def _extract_embedding_vectors(response: Any) -> list[list[float]]:
@@ -301,17 +302,34 @@ class IsaacusEmbeddings:
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        response = self._client.embeddings.create(
-            model=self._model,
-            texts=texts,
-            task="retrieval/document",
-        )
-        return _extract_embedding_vectors(response)
+        cleaned_texts: list[str] = []
+        for text in texts:
+            if text is None:
+                cleaned_texts.append("")
+            elif isinstance(text, str):
+                cleaned_texts.append(text)
+            else:
+                cleaned_texts.append(str(text))
+        vectors: list[list[float]] = []
+        for start in range(0, len(cleaned_texts), ISAACUS_MAX_EMBED_BATCH):
+            batch = cleaned_texts[start : start + ISAACUS_MAX_EMBED_BATCH]
+            response = self._client.embeddings.create(
+                model=self._model,
+                texts=batch,
+                task="retrieval/document",
+            )
+            batch_vectors = _extract_embedding_vectors(response)
+            if len(batch_vectors) != len(batch):
+                raise ValueError(
+                    "Isaacus returned a mismatched number of embedding vectors."
+                )
+            vectors.extend(batch_vectors)
+        return vectors
 
     def embed_query(self, text: str) -> list[float]:
         response = self._client.embeddings.create(
             model=self._model,
-            texts=[text],
+            texts=[text if isinstance(text, str) else str(text)],
             task="retrieval/query",
         )
         vectors = _extract_embedding_vectors(response)
