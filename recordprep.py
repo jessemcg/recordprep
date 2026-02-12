@@ -119,13 +119,19 @@ CONFIG_KEY_OVERVIEW_API_URL = "overview_api_url"
 CONFIG_KEY_OVERVIEW_MODEL_ID = "overview_model_id"
 CONFIG_KEY_OVERVIEW_API_KEY = "overview_api_key"
 CONFIG_KEY_OVERVIEW_PROMPT = "overview_prompt"
+CONFIG_KEY_RAG_PROVIDER = "rag_provider"
 CONFIG_KEY_RAG_VOYAGE_API_KEY = "rag_voyage_api_key"
 CONFIG_KEY_RAG_VOYAGE_MODEL = "rag_voyage_model"
+CONFIG_KEY_RAG_ISAACUS_API_KEY = "rag_isaacus_api_key"
+CONFIG_KEY_RAG_ISAACUS_MODEL = "rag_isaacus_model"
 CONFIG_KEY_SELECTED_PDFS = "selected_pdfs"
 CONFIG_KEY_RT_CT_SPLIT_PAGE = "rt_ct_split_page"
 TEXT_SOURCE_EMBEDDED = "embedded"
 TEXT_SOURCE_LOCAL_OCR = "local_ocr"
 DEFAULT_TEXT_SOURCE = TEXT_SOURCE_EMBEDDED
+RAG_PROVIDER_VOYAGE = "voyage"
+RAG_PROVIDER_ISAACUS = "isaacus"
+DEFAULT_RAG_PROVIDER = RAG_PROVIDER_VOYAGE
 DEFAULT_CLASSIFIER_PROMPT = (
     "You are labeling a single page of a legal transcript. "
     "Return JSON with keys: \"page_type\". "
@@ -267,6 +273,51 @@ DEFAULT_OVERVIEW_PROMPT = (
     "summaries:"
 )
 DEFAULT_RAG_VOYAGE_MODEL = "voyage-law-2"
+DEFAULT_RAG_ISAACUS_MODEL = "kanon-2-embedder"
+
+
+def _extract_embedding_vectors(response: Any) -> list[list[float]]:
+    embeddings = getattr(response, "embeddings", None)
+    if embeddings is None and isinstance(response, dict):
+        embeddings = response.get("embeddings")
+    if not isinstance(embeddings, list):
+        raise ValueError("Invalid embeddings response format.")
+    vectors: list[list[float]] = []
+    for item in embeddings:
+        vector = getattr(item, "embedding", None)
+        if vector is None and isinstance(item, dict):
+            vector = item.get("embedding")
+        if not isinstance(vector, list):
+            raise ValueError("Missing embedding vector in response.")
+        vectors.append(vector)
+    return vectors
+
+
+class IsaacusEmbeddings:
+    def __init__(self, client: Any, model: str) -> None:
+        self._client = client
+        self._model = model
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        response = self._client.embeddings.create(
+            model=self._model,
+            texts=texts,
+            task="retrieval/document",
+        )
+        return _extract_embedding_vectors(response)
+
+    def embed_query(self, text: str) -> list[float]:
+        response = self._client.embeddings.create(
+            model=self._model,
+            texts=[text],
+            task="retrieval/query",
+        )
+        vectors = _extract_embedding_vectors(response)
+        if not vectors:
+            raise ValueError("Isaacus returned no embedding vectors.")
+        return vectors[0]
 
 
 def _unique_in_order(items: list[str]) -> list[str]:
@@ -1667,8 +1718,12 @@ class OverviewSettingsWidgets:
 
 @dataclass
 class RagSettingsWidgets:
+    provider_row: Adw.ComboRow
+    provider_values: list[str]
     voyage_model_row: Adw.EntryRow
     voyage_key_row: Adw.EntryRow
+    isaacus_model_row: Adw.EntryRow
+    isaacus_key_row: Adw.EntryRow
 
 
 def load_optimize_settings() -> dict[str, str]:
@@ -1801,23 +1856,42 @@ def save_overview_settings(
 
 def load_rag_settings() -> dict[str, str]:
     config = _read_config()
+    provider = str(config.get(CONFIG_KEY_RAG_PROVIDER, DEFAULT_RAG_PROVIDER) or "").strip().lower()
+    if provider not in {RAG_PROVIDER_VOYAGE, RAG_PROVIDER_ISAACUS}:
+        provider = DEFAULT_RAG_PROVIDER
     voyage_key = str(config.get(CONFIG_KEY_RAG_VOYAGE_API_KEY, "") or "").strip()
     voyage_model = str(
         config.get(CONFIG_KEY_RAG_VOYAGE_MODEL, DEFAULT_RAG_VOYAGE_MODEL) or ""
     ).strip()
+    isaacus_key = str(config.get(CONFIG_KEY_RAG_ISAACUS_API_KEY, "") or "").strip()
+    isaacus_model = str(
+        config.get(CONFIG_KEY_RAG_ISAACUS_MODEL, DEFAULT_RAG_ISAACUS_MODEL) or ""
+    ).strip()
     return {
+        "provider": provider,
         "voyage_api_key": voyage_key,
         "voyage_model": voyage_model or DEFAULT_RAG_VOYAGE_MODEL,
+        "isaacus_api_key": isaacus_key,
+        "isaacus_model": isaacus_model or DEFAULT_RAG_ISAACUS_MODEL,
     }
 
 
 def save_rag_settings(
+    provider: str,
     voyage_api_key: str,
     voyage_model: str,
+    isaacus_api_key: str,
+    isaacus_model: str,
 ) -> None:
     config = _read_config()
+    normalized_provider = provider.strip().lower()
+    if normalized_provider not in {RAG_PROVIDER_VOYAGE, RAG_PROVIDER_ISAACUS}:
+        normalized_provider = DEFAULT_RAG_PROVIDER
+    config[CONFIG_KEY_RAG_PROVIDER] = normalized_provider
     config[CONFIG_KEY_RAG_VOYAGE_API_KEY] = voyage_api_key
     config[CONFIG_KEY_RAG_VOYAGE_MODEL] = voyage_model or DEFAULT_RAG_VOYAGE_MODEL
+    config[CONFIG_KEY_RAG_ISAACUS_API_KEY] = isaacus_api_key
+    config[CONFIG_KEY_RAG_ISAACUS_MODEL] = isaacus_model or DEFAULT_RAG_ISAACUS_MODEL
     _write_config(config)
 
 
@@ -2717,6 +2791,22 @@ class SettingsWindow(Adw.ApplicationWindow):
         title_label.add_css_class("title-3")
         page_box.append(title_label)
 
+        provider_group = Adw.PreferencesGroup(title="Embedding Provider")
+        provider_group.add_css_class("list-stack")
+        provider_group.set_hexpand(True)
+        page_box.append(provider_group)
+
+        provider_values = [RAG_PROVIDER_VOYAGE, RAG_PROVIDER_ISAACUS]
+        provider_labels = ["VoyageAI", "Isaacus"]
+        provider_row = Adw.ComboRow(title="Provider")
+        provider_row.set_model(Gtk.StringList.new(provider_labels))
+        provider = (settings.get("provider") or DEFAULT_RAG_PROVIDER).strip().lower()
+        if provider in provider_values:
+            provider_row.set_selected(provider_values.index(provider))
+        else:
+            provider_row.set_selected(0)
+        provider_group.add(provider_row)
+
         voyage_group = Adw.PreferencesGroup(title="Voyage RAG")
         voyage_group.add_css_class("list-stack")
         voyage_group.set_hexpand(True)
@@ -2730,6 +2820,19 @@ class SettingsWindow(Adw.ApplicationWindow):
         voyage_key_row.set_text(settings.get("voyage_api_key", ""))
         voyage_group.add(voyage_key_row)
 
+        isaacus_group = Adw.PreferencesGroup(title="Isaacus RAG")
+        isaacus_group.add_css_class("list-stack")
+        isaacus_group.set_hexpand(True)
+        page_box.append(isaacus_group)
+
+        isaacus_model_row = Adw.EntryRow(title="Isaacus Model")
+        isaacus_model_row.set_text(settings.get("isaacus_model", DEFAULT_RAG_ISAACUS_MODEL))
+        isaacus_group.add(isaacus_model_row)
+
+        isaacus_key_row = self._build_password_row("Isaacus API Key")
+        isaacus_key_row.set_text(settings.get("isaacus_api_key", ""))
+        isaacus_group.add(isaacus_key_row)
+
         page = Gtk.ScrolledWindow()
         page.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         page.set_hexpand(True)
@@ -2737,8 +2840,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.set_child(page_box)
 
         self._rag_widgets = RagSettingsWidgets(
+            provider_row=provider_row,
+            provider_values=provider_values,
             voyage_model_row=voyage_model_row,
             voyage_key_row=voyage_key_row,
+            isaacus_model_row=isaacus_model_row,
+            isaacus_key_row=isaacus_key_row,
         )
         return page
 
@@ -2840,9 +2947,16 @@ class SettingsWindow(Adw.ApplicationWindow):
                 self._prompt_text(overview_widgets.prompt_buffer).strip(),
             )
         if rag_widgets:
+            selected = rag_widgets.provider_row.get_selected()
+            provider = DEFAULT_RAG_PROVIDER
+            if 0 <= selected < len(rag_widgets.provider_values):
+                provider = rag_widgets.provider_values[selected]
             save_rag_settings(
+                provider,
                 rag_widgets.voyage_key_row.get_text().strip(),
                 rag_widgets.voyage_model_row.get_text().strip(),
+                rag_widgets.isaacus_key_row.get_text().strip(),
+                rag_widgets.isaacus_model_row.get_text().strip(),
             )
         if self._on_saved:
             self._on_saved()
@@ -3397,7 +3511,7 @@ class RecordPrepWindow(Adw.ApplicationWindow):
 
         self.step_twelve_row = Adw.ActionRow(
             title="Create RAG index",
-            subtitle="Build a VoyageAI/Chroma vector store from optimized text.",
+            subtitle="Build a VoyageAI or Isaacus Chroma vector store from optimized text.",
         )
         self.step_twelve_row.set_activatable(False)
         self._attach_step_controls(
@@ -6444,29 +6558,54 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                     "Run Create optimized to generate optimized files first."
                 )
             settings = load_rag_settings()
-            if not settings["voyage_api_key"] or not settings["voyage_model"]:
-                raise ValueError("Configure Voyage credentials in Settings.")
+            provider = settings.get("provider", DEFAULT_RAG_PROVIDER)
             try:
                 from langchain_chroma import Chroma  # type: ignore
                 from langchain_core.documents import Document  # type: ignore
-                voyage_module = importlib.import_module("langchain_voyageai")
-                rag_embedder_class = getattr(
-                    voyage_module,
-                    "VoyageAI" + "Emb" + "eddings",
-                )
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(
-                    "Missing langchain/chroma/voyage dependencies. See uv add instructions."
+                    "Missing langchain/chroma dependencies. See uv add instructions."
                 ) from exc
 
             rag_dir = root_dir / "rag"
             vector_dir = rag_dir / "vector_database"
             vector_dir.mkdir(parents=True, exist_ok=True)
 
-            rag_embedder = rag_embedder_class(
-                voyage_api_key=settings["voyage_api_key"],
-                model=settings["voyage_model"],
-            )
+            if provider == RAG_PROVIDER_VOYAGE:
+                if not settings["voyage_api_key"] or not settings["voyage_model"]:
+                    raise ValueError("Configure Voyage credentials in Settings.")
+                try:
+                    voyage_module = importlib.import_module("langchain_voyageai")
+                    rag_embedder_class = getattr(
+                        voyage_module,
+                        "VoyageAI" + "Emb" + "eddings",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        "Missing Voyage embedding dependencies. Run `uv add langchain-voyageai voyageai`."
+                    ) from exc
+                rag_embedder = rag_embedder_class(
+                    voyage_api_key=settings["voyage_api_key"],
+                    model=settings["voyage_model"],
+                )
+            elif provider == RAG_PROVIDER_ISAACUS:
+                if not settings["isaacus_api_key"] or not settings["isaacus_model"]:
+                    raise ValueError("Configure Isaacus credentials in Settings.")
+                try:
+                    isaacus_module = importlib.import_module("isaacus")
+                    isaacus_client_class = getattr(isaacus_module, "Isaacus")
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        "Missing Isaacus SDK dependency. Run `uv add isaacus`."
+                    ) from exc
+                isaacus_client = isaacus_client_class(api_key=settings["isaacus_api_key"])
+                rag_embedder = IsaacusEmbeddings(
+                    client=isaacus_client,
+                    model=settings["isaacus_model"],
+                )
+            else:
+                raise ValueError(f"Unsupported RAG embedding provider: {provider}")
+
             vectorstore = Chroma(
                 persist_directory=str(vector_dir),
                 embedding_function=rag_embedder,

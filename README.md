@@ -10,7 +10,7 @@ case bundle with classifications, summaries, and retrieval-ready artifacts for a
 - Pipeline implementation and settings UI live in a single entry point (`recordprep.py`).
 - Settings are stored in `config.json` and cover API URLs, model IDs, keys, and prompts.
 - Local OCR defaults to a llama.cpp server, while remote steps use configurable API providers.
-- RAG output targets VoyageAI embeddings with a Chroma vector store.
+- RAG output targets VoyageAI or Isaacus embeddings with a Chroma vector store.
 
 ## What it does
 - Imports one or more PDFs (merged in natural sort order).
@@ -18,21 +18,21 @@ case bundle with classifications, summaries, and retrieval-ready artifacts for a
 - Classifies pages, adds dates/names, and builds a table of contents.
 - Finds hearing/report/minute order boundaries.
 - Generates raw and optimized text, summaries, and a case overview.
-- Optionally builds a VoyageAI/Chroma RAG index from optimized hearing/report content.
+- Optionally builds a VoyageAI/Chroma or Isaacus/Chroma RAG index from optimized hearing/report content.
 
 <img src="recordprep_screenshot.png" alt="Record Prep screenshot" width="500">
 
 ## Requirements
 - Python 3.13+
 - GTK4/Libadwaita (via `pygobject`)
-- `pdftotext` Python bindings, PyMuPDF, PyPDF, LangChain + Chroma + VoyageAI (for RAG)
+- `pdftotext` Python bindings, PyMuPDF, PyPDF, LangChain + Chroma + VoyageAI/Isaacus (for RAG)
 
 ## Recommended models
 - OCR model: LightOnOCR-2-1B-Q8_0.gguf via llama.cpp
 - Vision model: qwen3-vl-235b-a22b-instruct via Fireworks API
 - Optimize model: llama-3.3-70b via Cerebras API
 - Summarization model: deepseek-v3p1 via Fireworks API
-- Embeddings model: voyage-law-2 via Voyage API
+- Embeddings model: voyage-law-2 via Voyage API or kanon-2-embedder via Isaacus API
 
 ## Quick start
 ```bash
@@ -78,7 +78,7 @@ case_bundle/
 - Create optimized: LLM-reformat text for retrieval.
 - Create summaries: generate hearing/report/minute summaries (case-named when available).
 - Case overview: create a three-paragraph RAG overview.
-- Create RAG index: build a VoyageAI/Chroma vector store.
+- Create RAG index: build a VoyageAI/Chroma or Isaacus/Chroma vector store.
 
 ## Settings
 Settings are stored in `config.json` next to `recordprep.py` and include API URLs, model IDs,
