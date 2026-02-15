@@ -890,6 +890,49 @@ def _normalize_hearing_date(value: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _format_long_us_date(value: str) -> str:
+    cleaned = _normalize_hearing_date(value)
+    if not cleaned:
+        return ""
+    for fmt in (
+        "%B %d, %Y",
+        "%b %d, %Y",
+        "%m/%d/%Y",
+        "%m/%d/%y",
+        "%Y-%m-%d",
+    ):
+        try:
+            parsed = datetime.datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+        return f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}"
+    return cleaned
+
+
+def _hearing_date_key(value: str) -> str:
+    return _format_long_us_date(value).lower()
+
+
+def _extract_start_page_for_date_links(entry: dict[str, Any]) -> str | None:
+    start_label = _extract_entry_value(entry, "start_page", "start", "starte_page").strip()
+    if not start_label:
+        return None
+    start_page = _page_number_from_label(start_label)
+    if start_page is None:
+        return None
+    return f"{start_page:04d}"
+
+
+def _has_page_markdown_links(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return bool(re.search(r"\]\(page:\d{4}\)", text))
+
+
 def _remove_standalone_date_lines(text: str) -> str:
     if not text:
         return text
@@ -3514,6 +3557,21 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         self._attach_step_status(self.step_ten_row)
         self.step_list.append(self.step_ten_row)
 
+        self.step_add_hearing_date_links_row = Adw.ActionRow(
+            title="Add date links to hearing sum",
+            subtitle="Add Markdown page links for RT and minute-order first pages.",
+        )
+        self.step_add_hearing_date_links_row.set_activatable(False)
+        self._attach_step_controls(
+            "add_hearing_date_links",
+            self.step_add_hearing_date_links_row,
+            lambda _btn: self.on_step_add_hearing_date_links_clicked(
+                self.step_add_hearing_date_links_row
+            ),
+        )
+        self._attach_step_status(self.step_add_hearing_date_links_row)
+        self.step_list.append(self.step_add_hearing_date_links_row)
+
         self.step_eleven_row = Adw.ActionRow(
             title="Case overview",
             subtitle="Create a three-paragraph overview for RAG context.",
@@ -3737,8 +3795,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         return False
 
     def show_toast(self, message: str) -> None:
-        safe_message = GLib.markup_escape_text(message)
-        toast = Adw.Toast(title=safe_message)
+        display_message = " ".join(str(message).split()).strip()
+        if len(display_message) > 100:
+            display_message = display_message[:97].rstrip() + "..."
+        toast = Adw.Toast(title=display_message)
         toast.set_timeout(10)
         self.toast_overlay.add_toast(toast)
         # Also log to stderr so short toasts don't hide errors.
@@ -3907,6 +3967,10 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         _set_done(
             self.step_ten_row,
             summaries_path.exists() and reports_path.exists() and minutes_path.exists(),
+        )
+        _set_done(
+            self.step_add_hearing_date_links_row,
+            _has_page_markdown_links(summaries_path),
         )
         _set_done(self.step_eleven_row, (rag_dir / "case_overview.txt").exists())
         _set_done(
@@ -4297,6 +4361,11 @@ class RecordPrepWindow(Adw.ApplicationWindow):
             ("create_raw", self.step_eight_row, self._run_step_eight),
             ("create_optimized", self.step_nine_row, self._run_step_nine),
             ("create_summaries", self.step_ten_row, self._run_step_ten),
+            (
+                "add_hearing_date_links",
+                self.step_add_hearing_date_links_row,
+                self._run_step_add_hearing_date_links,
+            ),
             ("case_overview", self.step_eleven_row, self._run_step_eleven),
             ("create_rag_index", self.step_twelve_row, self._run_step_twelve),
         ]
@@ -4719,6 +4788,19 @@ class RecordPrepWindow(Adw.ApplicationWindow):
                 self.show_toast("Choose PDF files or select a saved case first.")
             return
         self._launch_single_step(self.step_ten_row, self._run_step_ten)
+
+    def on_step_add_hearing_date_links_clicked(self, _row: Adw.ActionRow) -> None:
+        root_dir = self._resolve_case_root()
+        if root_dir is None:
+            if self.selected_pdfs:
+                self.show_toast("Selected PDFs must be in the same folder.")
+            else:
+                self.show_toast("Choose PDF files or select a saved case first.")
+            return
+        self._launch_single_step(
+            self.step_add_hearing_date_links_row,
+            self._run_step_add_hearing_date_links,
+        )
 
     def on_step_eleven_clicked(self, _row: Adw.ActionRow) -> None:
         root_dir = self._resolve_case_root()
@@ -6489,6 +6571,120 @@ class RecordPrepWindow(Adw.ApplicationWindow):
         finally:
             GLib.idle_add(self.step_ten_row.set_sensitive, True)
             GLib.idle_add(self._finish_step, self.step_ten_row, success)
+            GLib.idle_add(self._stop_status_if_idle)
+            GLib.idle_add(self._stop_button_if_idle)
+        return success is True
+
+    def _run_step_add_hearing_date_links(self) -> bool:
+        success: bool | None = False
+        try:
+            self._raise_if_stop_requested()
+            root_dir = self._resolve_case_root()
+            if root_dir is None:
+                if self.selected_pdfs:
+                    raise ValueError("Selected PDFs must be in the same folder.")
+                raise ValueError("Choose PDF files or select a saved case first.")
+            artifacts_dir = root_dir / "artifacts"
+            summaries_path, _reports_path = _summary_output_paths(root_dir)
+            if not summaries_path.exists():
+                raise FileNotFoundError("Run Create summaries to generate hearing summaries first.")
+            hearing_boundaries_path = artifacts_dir / "hearing_boundaries.json"
+            minutes_boundaries_path = artifacts_dir / "minutes_boundaries.json"
+            if not hearing_boundaries_path.exists() or not minutes_boundaries_path.exists():
+                raise FileNotFoundError(
+                    "Run Find boundaries to generate hearing/minute boundaries first."
+                )
+
+            hearing_entries = _load_json_entries(hearing_boundaries_path)
+            minute_entries = _load_json_entries(minutes_boundaries_path)
+            if not hearing_entries:
+                raise FileNotFoundError("No hearing boundaries found.")
+
+            hearing_page_by_date: dict[str, str] = {}
+            minute_page_by_date: dict[str, str] = {}
+            display_date_by_key: dict[str, str] = {}
+
+            for entry in hearing_entries:
+                date_value = _extract_entry_value(entry, "date").strip()
+                if not date_value:
+                    continue
+                page_str = _extract_start_page_for_date_links(entry)
+                if not page_str:
+                    continue
+                date_key = _hearing_date_key(date_value)
+                if not date_key:
+                    continue
+                hearing_page_by_date.setdefault(date_key, page_str)
+                display_date_by_key.setdefault(date_key, _format_long_us_date(date_value))
+
+            for entry in minute_entries:
+                date_value = _extract_entry_value(entry, "date").strip()
+                if not date_value:
+                    continue
+                page_str = _extract_start_page_for_date_links(entry)
+                if not page_str:
+                    continue
+                date_key = _hearing_date_key(date_value)
+                if not date_key:
+                    continue
+                minute_page_by_date.setdefault(date_key, page_str)
+                display_date_by_key.setdefault(date_key, _format_long_us_date(date_value))
+
+            hearing_summary_lines = summaries_path.read_text(
+                encoding="utf-8",
+                errors="ignore",
+            ).splitlines()
+            linked_lines: list[str] = []
+            modified = 0
+
+            for line in hearing_summary_lines:
+                self._raise_if_stop_requested()
+                stripped = line.strip()
+                if not stripped:
+                    linked_lines.append(line)
+                    continue
+                stripped_for_date = re.sub(r"\[[^\]]+\]\(page:\d{4}\)", "", stripped)
+                stripped_for_date = re.sub(r"\s+", " ", stripped_for_date).strip()
+                date_key = _hearing_date_key(stripped_for_date)
+                rt_page = hearing_page_by_date.get(date_key)
+                if not rt_page:
+                    linked_lines.append(line)
+                    continue
+                display_date = display_date_by_key.get(date_key) or _format_long_us_date(
+                    stripped_for_date
+                )
+                pieces = [f"{display_date} [Hearing](page:{rt_page})"]
+                minute_page = minute_page_by_date.get(date_key)
+                if minute_page:
+                    pieces.append(f"[Minute Order](page:{minute_page})")
+                linked_lines.append(" ".join(pieces))
+                modified += 1
+
+            if modified == 0:
+                raise ValueError("No hearing date headings matched boundary dates.")
+
+            summaries_path.write_text(
+                _collapse_blank_lines("\n".join(linked_lines)),
+                encoding="utf-8",
+            )
+        except StopRequested:
+            success = None
+        except Exception as exc:
+            GLib.idle_add(self.show_toast, f"Add date links to hearing Sum failed: {exc}")
+        else:
+            success = True
+            self._safe_update_manifest(
+                root_dir,
+                {
+                    "last_completed_step": "add_hearing_date_links",
+                    "last_failed_step": None,
+                    "last_failed_at": None,
+                },
+            )
+            GLib.idle_add(self.show_toast, "Add date links to hearing Sum complete.")
+        finally:
+            GLib.idle_add(self.step_add_hearing_date_links_row.set_sensitive, True)
+            GLib.idle_add(self._finish_step, self.step_add_hearing_date_links_row, success)
             GLib.idle_add(self._stop_status_if_idle)
             GLib.idle_add(self._stop_button_if_idle)
         return success is True
